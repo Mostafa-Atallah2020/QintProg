@@ -1,0 +1,4 @@
+matplotlib
+black[jupyter]
+networkx
+pulp
