@@ -2,3 +2,4 @@ matplotlib
 black[jupyter]
 networkx
 pulp
+seaborn
