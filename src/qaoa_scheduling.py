@@ -244,24 +244,16 @@ class QAOAScheduler:
         )
 
     def schedule_greedy(self) -> SchedulingResult:
-        """
-        Schedule gates using greedy approach with flexible start times.
-        Gates within same layer can start at different times to minimize gaps.
-        """
-        # Time before scheduling (sequential)
         cost_time_before = sum(self.circuit.gamma_gates.values())
         total_time_before = cost_time_before + self.circuit.beta_time
-
-        # Track when each qubit becomes available
         qubit_available = {i: 0.0 for i in range(self.circuit.n_qubits)}
-
-        # Store start time for each gate
         gate_start_times = {}
-        gate_layers = {}  # Map gates to their layers
-        current_layer = []
         layers = []
 
-        # Sort gates by duration (longest first)
+        # Track all gamma gates for each qubit
+        qubit_gammas = {i: [] for i in range(self.circuit.n_qubits)}
+
+        # Schedule cost gates
         remaining_gates = sorted(
             list(self.circuit.gamma_gates.keys()),
             key=lambda g: self.circuit.gamma_gates[g],
@@ -269,65 +261,65 @@ class QAOAScheduler:
         )
 
         while remaining_gates:
-            current_layer = []
+            layer_gates = []
             used_qubits = set()
-            layer_end_time = 0
 
-            # Try to schedule each remaining gate
             i = 0
             while i < len(remaining_gates):
                 gate = remaining_gates[i]
                 q1, q2 = gate
 
-                # Skip if either qubit is used in current layer
                 if q1 in used_qubits or q2 in used_qubits:
                     i += 1
                     continue
 
-                # Calculate earliest possible start time for this gate
                 start_time = max(qubit_available[q1], qubit_available[q2])
                 end_time = start_time + self.circuit.gamma_gates[gate]
 
-                # Add gate to current layer
-                current_layer.append(gate)
+                layer_gates.append(gate)
                 gate_start_times[gate] = start_time
                 used_qubits.add(q1)
                 used_qubits.add(q2)
 
-                # Update qubit availability
+                # Track gamma gates for each qubit
+                qubit_gammas[q1].append((start_time, end_time))
+                qubit_gammas[q2].append((start_time, end_time))
+
                 qubit_available[q1] = end_time
                 qubit_available[q2] = end_time
 
-                layer_end_time = max(layer_end_time, end_time)
-
-                # Remove scheduled gate
                 remaining_gates.pop(i)
 
-            if current_layer:
-                layer_time = layer_end_time - min(
-                    gate_start_times[g] for g in current_layer
+            if layer_gates:
+                layer = SchedulingLayer(
+                    gates=layer_gates,
+                    time=max(qubit_available[q] for q in used_qubits)
+                    - min(gate_start_times[g] for g in layer_gates),
+                    layer_type="cost",
+                    gate_start_times={g: gate_start_times[g] for g in layer_gates},
                 )
-                layers.append(
-                    SchedulingLayer(
-                        gates=current_layer, time=layer_time, layer_type="cost"
-                    )
-                )
-                for gate in current_layer:
-                    gate_layers[gate] = len(layers) - 1
+                layers.append(layer)
 
-        # Add mixer layer
-        mixer_start_time = max(qubit_available.values())
+        # Schedule beta gates after all gammas for each qubit
+        beta_start_times = {}
+        for qubit in range(self.circuit.n_qubits):
+            if qubit_gammas[qubit]:
+                # Get last gamma end time for this qubit
+                last_gamma_end = max(end for _, end in qubit_gammas[qubit])
+                beta_start_times[(qubit,)] = last_gamma_end
+            else:
+                beta_start_times[(qubit,)] = 0
+
         mixer_layer = SchedulingLayer(
             gates=[(i,) for i in range(self.circuit.n_qubits)],
             time=self.circuit.beta_time,
             layer_type="mixer",
+            gate_start_times=beta_start_times,
         )
 
-        total_time_after = mixer_start_time + self.circuit.beta_time
-
-        # Store timing information in the result object
-        for layer in layers:
-            layer.gate_start_times = {g: gate_start_times[g] for g in layer.gates}
+        total_time_after = max(
+            t + self.circuit.beta_time for t in beta_start_times.values()
+        )
 
         return SchedulingResult(
             cost_layers=layers,
@@ -335,40 +327,32 @@ class QAOAScheduler:
             total_time_before=total_time_before,
             total_time_after=total_time_after,
             improvement=total_time_before - total_time_after,
-            gate_timings=gate_start_times,
+            gate_timings={**gate_start_times, **beta_start_times},
         )
 
     def visualize_schedule_comparison(self, result: SchedulingResult):
-        """
-        Visualize schedules with qubits as horizontal lines and gates as blocks.
-        Shows both sequential and parallel schedules for comparison.
-        """
+        """Visualize schedules with qubits as lines and gates as blocks."""
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 8))
-
-        # Common styling
         gate_height = 0.5
         qubit_spacing = 1.0
         connector_width = 0.1
 
         def draw_qubit_lines(ax, max_time):
-            """Draw horizontal lines representing qubits."""
             for i in range(self.circuit.n_qubits):
                 ax.hlines(
                     y=i * qubit_spacing,
                     xmin=0,
                     xmax=max_time,
                     color="black",
-                    linestyle="-",
                     linewidth=1,
                 )
                 ax.text(-0.5, i * qubit_spacing, f"Q{i}", ha="right", va="center")
 
         def draw_cost_gate(ax, gate, start_time, duration):
-            """Draw a two-qubit cost gate with exact start time."""
             q1, q2 = gate
             q_min, q_max = min(q1, q2), max(q1, q2)
 
-            # Draw endpoint connectors
+            # Draw endpoints
             for q in [q1, q2]:
                 rect = plt.Rectangle(
                     (start_time, q * qubit_spacing - gate_height / 2),
@@ -390,14 +374,13 @@ class QAOAScheduler:
                 )
                 ax.add_patch(rect)
 
-            # Draw vertical connection between qubits
+            # Draw connection
             if abs(q1 - q2) > 1:
                 ax.vlines(
                     start_time,
                     q_min * qubit_spacing,
                     q_max * qubit_spacing,
                     color="red",
-                    linestyle="-",
                     alpha=0.5,
                 )
                 ax.vlines(
@@ -405,7 +388,6 @@ class QAOAScheduler:
                     q_min * qubit_spacing,
                     q_max * qubit_spacing,
                     color="red",
-                    linestyle="-",
                     alpha=0.5,
                 )
             else:
@@ -419,7 +401,6 @@ class QAOAScheduler:
                 )
                 ax.add_patch(rect)
 
-            # Add gate label
             ax.text(
                 start_time + duration / 2,
                 (q_min + q_max) * qubit_spacing / 2,
@@ -429,7 +410,6 @@ class QAOAScheduler:
             )
 
         def draw_mixer_gate(ax, qubit, start_time, duration):
-            """Draw a single-qubit mixer gate."""
             rect = plt.Rectangle(
                 (start_time, qubit * qubit_spacing - gate_height / 3),
                 duration,
@@ -447,18 +427,14 @@ class QAOAScheduler:
                 va="center",
             )
 
-        # 1. Sequential Schedule
+        # Sequential Schedule
         current_time = 0
-        max_gamma_time = 0
         draw_qubit_lines(ax1, result.total_time_before)
 
-        # Draw cost gates sequentially
         for gate, time in self.circuit.gamma_gates.items():
             draw_cost_gate(ax1, gate, current_time, time)
-            max_gamma_time = max(max_gamma_time, current_time + time)
             current_time += time
 
-        # Draw mixer gates
         for i in range(self.circuit.n_qubits):
             draw_mixer_gate(ax1, i, current_time, self.circuit.beta_time)
 
@@ -466,29 +442,28 @@ class QAOAScheduler:
         ax1.set_xlim(-1, result.total_time_before + 1)
         ax1.set_ylim(-1, (self.circuit.n_qubits - 0.5) * qubit_spacing)
         ax1.set_xlabel("Time")
-        ax1.grid(True, alpha=0.3, which="both")
+        ax1.grid(True, alpha=0.3)
 
-        # 2. Parallel Schedule with flexible timing
+        # Parallel Schedule
         draw_qubit_lines(ax2, result.total_time_after)
 
-        # Draw cost gates at their specific start times
+        # Draw cost gates
         for layer in result.cost_layers:
             for gate in layer.gates:
                 start_time = layer.gate_start_times[gate]
                 draw_cost_gate(ax2, gate, start_time, self.circuit.gamma_gates[gate])
 
-        # Draw mixer gates at end
-        mixer_start = result.total_time_after - self.circuit.beta_time
-        for i in range(self.circuit.n_qubits):
-            draw_mixer_gate(ax2, i, mixer_start, self.circuit.beta_time)
+        # Draw beta gates at their individual start times
+        for qubit in range(self.circuit.n_qubits):
+            beta_start = result.mixer_layer.gate_start_times.get((qubit,), 0)
+            draw_mixer_gate(ax2, qubit, beta_start, self.circuit.beta_time)
 
         ax2.set_title(f"Parallel Schedule (Total Time: {result.total_time_after})")
         ax2.set_xlim(-1, result.total_time_after + 1)
         ax2.set_ylim(-1, (self.circuit.n_qubits - 0.5) * qubit_spacing)
         ax2.set_xlabel("Time")
-        ax2.grid(True, alpha=0.3, which="both")
+        ax2.grid(True, alpha=0.3)
 
-        # Overall title
         fig.suptitle(
             f"QAOA Circuit Schedule\nTime Improvement: {result.improvement}",
             fontsize=14,
