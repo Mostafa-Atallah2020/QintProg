@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from typing import Dict, List, Tuple, Set
 import matplotlib.pyplot as plt
@@ -252,8 +253,14 @@ class QAOAScheduler:
             gate_timings={**gate_start_times, **beta_start_times},
         )
 
-    def visualize_schedule_comparison(self, result: SchedulingResult):
-        """Visualize schedules with qubits as lines and gates as blocks."""
+    def visualize_schedule_comparison(self, result: SchedulingResult, save_path=None):
+        """
+        Visualize schedules with qubits as lines and gates as blocks.
+        
+        Args:
+            result: SchedulingResult object containing schedule details
+            save_path: Optional path to save the plot as PDF. If None, displays the plot instead.
+        """
         fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 8))
         gate_height = 0.5
         qubit_spacing = 1.0
@@ -391,4 +398,11 @@ class QAOAScheduler:
             fontsize=14,
         )
         plt.tight_layout()
-        plt.show()
+
+        if save_path:
+            # Create the plots directory if it doesn't exist
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(save_path, format='pdf', bbox_inches='tight', dpi=300)
+            plt.show()
+        else:
+            plt.show()
