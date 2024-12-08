@@ -50,184 +50,105 @@ class QAOAScheduler:
         return [g for g in available_gates if g != gate and q1 not in g and q2 not in g]
 
     def get_lp_model(self) -> str:
-        """Display the LP model formulation."""
         edges = self.edges
-        max_layers = len(edges)
-
-        model_str = []
-        model_str.append("Linear Programming Model for QAOA Gate Scheduling")
-        model_str.append("=" * 50)
-
-        # Variables
-        model_str.append("\nDecision Variables:")
-        model_str.append("x[g,l] = 1 if gate g is assigned to layer l (binary)")
-        model_str.append("y[l] = 1 if layer l is used (binary)")
-        model_str.append("layer_time[l] = execution time of layer l")
-        model_str.append("z = total circuit time (including mixer)")
-
-        # Objective
-        model_str.append("\nObjective:")
-        model_str.append("Minimize: z + ε * Σ_g,l (l * x[g,l])")
-        model_str.append("where ε is a small weight to prioritize earlier layers")
-
-        # Constraints
-        model_str.append("\nConstraints:")
-
-        # Gate assignment
-        model_str.append("\n1. Each gate must be in exactly one layer:")
-        for g in edges:
-            vars_str = " + ".join([f"x_{g}_{l}" for l in range(max_layers)])
-            model_str.append(f"   {vars_str} = 1")
-
-        # Layer times
-        model_str.append("\n2. Layer time must accommodate all gates in the layer:")
-        for l in range(max_layers):
-            for g in edges:
-                t_g = self.circuit.gamma_gates[g]
-                model_str.append(f"   layer_time_{l} ≥ {t_g} * x_{g}_{l}")
-
-        # Conflicting gates
-        model_str.append("\n3. Conflicting gates cannot be in same layer:")
-        for l in range(max_layers):
-            for g1 in edges:
-                for g2 in edges:
-                    if g1 < g2 and (g1[0] in g2 or g1[1] in g2):
-                        model_str.append(f"   x_{g1}_{l} + x_{g2}_{l} ≤ 1")
-
-        # Layer usage
-        model_str.append("\n4. Mark layer as used if it contains any gates:")
-        for l in range(max_layers):
-            for g in edges:
-                model_str.append(f"   x_{g}_{l} ≤ y_{l}")
-
-        # Consecutive layers
-        model_str.append("\n5. Used layers must be consecutive:")
-        for l in range(1, max_layers):
-            model_str.append(f"   y_{l} ≤ y_{l-1}")
-
-        # Total time
-        model_str.append("\n6. Total time calculation:")
-        time_sum = " + ".join([f"layer_time_{l}" for l in range(max_layers)])
-        model_str.append(f"   z = {time_sum} + {self.circuit.beta_time}")
-
-        # Variable domains
-        model_str.append("\nVariable Domains:")
-        model_str.append("x[g,l] ∈ {0,1} for all gates g and layers l")
-        model_str.append("y[l] ∈ {0,1} for all layers l")
-        model_str.append("layer_time[l] ≥ 0 for all layers l")
-        model_str.append("z ≥ 0")
-
-        # Problem dimensions
-        model_str.append("\nProblem Size:")
-        n_bin_vars = len(edges) * max_layers + max_layers  # x and y variables
-        n_cont_vars = max_layers + 1  # layer_times and z
-        n_constraints = (
-            len(edges)  # gate assignment
-            + len(edges) * max_layers  # layer times
-            + sum(
-                1
+        model_str = [
+            f"QAOA Circuit with {self.circuit.n_qubits} qubits",
+            "\nGate times:",
+            *[f"t_{g} = {self.circuit.gamma_gates[g]}" for g in edges],
+            f"t_β = {self.circuit.beta_time}",
+            "\nMinimize: Z",
+            "\nSubject to:",
+            "\n1. Non-overlapping gates:",
+            *[
+                f"x_{g1} ≥ x_{g2} + {self.circuit.gamma_gates[g2]} - M⋅y_{g1}{g2}"
                 for g1 in edges
                 for g2 in edges
-                if g1 < g2 and (g1[0] in g2 or g1[1] in g2)
-            )
-            * max_layers  # conflicts
-            + len(edges) * max_layers  # layer usage
-            + max_layers
-            - 1  # consecutive layers
-            + 1
-        )  # total time
-
-        model_str.append(f"Binary variables: {n_bin_vars}")
-        model_str.append(f"Continuous variables: {n_cont_vars}")
-        model_str.append(f"Constraints: {n_constraints}")
+                if g1 < g2 and (set(g1) & set(g2))
+            ],
+            *[
+                f"x_{g2} ≥ x_{g1} + {self.circuit.gamma_gates[g1]} - M⋅(1-y_{g1}{g2})"
+                for g1 in edges
+                for g2 in edges
+                if g1 < g2 and (set(g1) & set(g2))
+            ],
+            "\n2. Total time:",
+            *[
+                f"Z ≥ x_{g} + {self.circuit.gamma_gates[g]} + {self.circuit.beta_time}"
+                for g in edges
+            ],
+            "\n3. Variable domains:",
+            "x_g ≥ 0 for all gates g",
+            "y_gg' ∈ {0,1} for all conflicting gates g,g'",
+            "Z ≥ 0",
+            f"\nwhere M = {sum(self.circuit.gamma_gates.values())}",
+        ]
 
         return "\n".join(model_str)
 
     def solve_lp(self) -> SchedulingResult:
-        """Solve scheduling using Linear Programming."""
         model = pulp.LpProblem("QAOA_Scheduling", pulp.LpMinimize)
         edges = self.edges
-        max_layers = len(edges)
 
-        # Decision variables
+        # Variables
         x = pulp.LpVariable.dicts(
-            "assign", ((g, l) for g in edges for l in range(max_layers)), cat="Binary"
-        )
+            "start", edges, lowBound=0
+        )  # start time for each gate
+        z = pulp.LpVariable("total_time", lowBound=0)  # total circuit time
 
-        y = pulp.LpVariable.dicts(
-            "use_layer", (l for l in range(max_layers)), cat="Binary"
-        )
+        # Objective
+        model += z
 
-        layer_time = pulp.LpVariable.dicts(
-            "layer_time", (l for l in range(max_layers)), lowBound=0
-        )
+        # Non-overlapping constraints for gates sharing qubits
+        M = sum(self.circuit.gamma_gates.values())  # Big-M value
+        for g1 in edges:
+            for g2 in edges:
+                if g1 < g2 and (set(g1) & set(g2)):
+                    y = pulp.LpVariable(
+                        f"y_{g1}_{g2}", cat="Binary"
+                    )  # ordering variable
+                    model += x[g1] >= x[g2] + self.circuit.gamma_gates[g2] - M * y
+                    model += x[g2] >= x[g1] + self.circuit.gamma_gates[g1] - M * (1 - y)
 
-        z = pulp.LpVariable("total_time", lowBound=0)
-
-        # Objective with small weight for layer assignment
-        eps = 0.01
-        model += z + eps * pulp.lpSum(
-            l * x[g, l] for g in edges for l in range(max_layers)
-        )
-
-        # Constraints
-        # 1. Each gate in one layer
+        # Total time constraints
         for g in edges:
-            model += pulp.lpSum(x[g, l] for l in range(max_layers)) == 1
+            model += z >= x[g] + self.circuit.gamma_gates[g] + self.circuit.beta_time
 
-        # 2. Layer time constraints
-        for l in range(max_layers):
-            for g in edges:
-                model += layer_time[l] >= self.circuit.gamma_gates[g] * x[g, l]
-
-        # 3. Conflicting gates
-        for l in range(max_layers):
-            for g1 in edges:
-                for g2 in edges:
-                    if g1 < g2 and (g1[0] in g2 or g1[1] in g2):
-                        model += x[g1, l] + x[g2, l] <= 1
-
-        # 4. Layer usage
-        for l in range(max_layers):
-            for g in edges:
-                model += x[g, l] <= y[l]
-
-        # 5. Consecutive layers
-        for l in range(1, max_layers):
-            model += y[l] <= y[l - 1]
-
-        # 6. Total time
-        model += (
-            z
-            == pulp.lpSum(layer_time[l] for l in range(max_layers))
-            + self.circuit.beta_time
-        )
-
-        # Solve
-        status = model.solve(pulp.PULP_CBC_CMD(msg=False))
-
+        model.solve(pulp.PULP_CBC_CMD(msg=False))
         if pulp.LpStatus[model.status] != "Optimal":
             raise ValueError("Could not find optimal solution")
 
-        # Extract solution
-        layers = []
-        for l in range(max_layers):
-            if pulp.value(y[l]) > 0.5:
-                layer_gates = [g for g in edges if pulp.value(x[g, l]) > 0.5]
-                if layer_gates:
-                    layers.append(
-                        SchedulingLayer(
-                            gates=layer_gates,
-                            time=pulp.value(layer_time[l]),
-                            layer_type="cost",
-                        )
-                    )
+        gate_timings = {g: pulp.value(x[g]) for g in edges}
 
-        # Add mixer layer
+        # Calculate beta start times
+        beta_starts = {}
+        for i in range(self.circuit.n_qubits):
+            qubit_gammas = [g for g in edges if i in g]
+            if qubit_gammas:
+                last_gamma_end = max(
+                    pulp.value(x[g]) + self.circuit.gamma_gates[g] for g in qubit_gammas
+                )
+                beta_starts[(i,)] = last_gamma_end
+
+        gate_timings.update(beta_starts)
+
+        # Create layers
+        layers = []
+        for g, start in sorted(
+            ((g, pulp.value(x[g])) for g in edges), key=lambda x: x[1]
+        ):
+            layer = SchedulingLayer(
+                gates=[g],
+                time=self.circuit.gamma_gates[g],
+                layer_type="cost",
+                gate_start_times={g: start},
+            )
+            layers.append(layer)
+
         mixer_layer = SchedulingLayer(
             gates=[(i,) for i in range(self.circuit.n_qubits)],
             time=self.circuit.beta_time,
             layer_type="mixer",
+            gate_start_times=beta_starts,
         )
 
         total_time_before = (
@@ -241,6 +162,7 @@ class QAOAScheduler:
             total_time_before=total_time_before,
             total_time_after=total_time_after,
             improvement=total_time_before - total_time_after,
+            gate_timings=gate_timings,
         )
 
     def schedule_greedy(self) -> SchedulingResult:
