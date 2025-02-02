@@ -207,7 +207,7 @@ def compare_solutions(exhaustive_solver: MaxColoring, lp_solver: ColoringLP):
 def visualize_cyclic_graph(circuit: QAOACircuit, save_path: str = None):
     """
     Visualize a cyclic graph with edge weights from the QAOA circuit.
-    
+
     Args:
         circuit (QAOACircuit): The QAOA circuit containing the graph structure
         save_path (str, optional): If provided, save the plot to this path
@@ -240,14 +240,17 @@ def visualize_cyclic_graph(circuit: QAOACircuit, save_path: str = None):
     plt.axis("off")
     plt.title(f"Cyclic Graph: C{n}")
     plt.tight_layout()
-    
+
     if save_path:
-        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        plt.savefig(save_path, bbox_inches="tight", dpi=300)
         plt.show()
     else:
         plt.show()
 
-def visualize_complete_graph(circuit: QAOACircuit, save_path: str = None, figsize=(8, 8)):
+
+def visualize_complete_graph(
+    circuit: QAOACircuit, save_path: str = None, figsize=(8, 8)
+):
     """
     Visualize a complete graph with edge weights from the QAOA circuit.
 
@@ -300,7 +303,7 @@ def visualize_complete_graph(circuit: QAOACircuit, save_path: str = None, figsiz
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, bbox_inches='tight', dpi=300)
+        plt.savefig(save_path, bbox_inches="tight", dpi=300)
         plt.show()
     else:
         plt.show()
