@@ -1,8 +1,7 @@
+import os
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional, Set
-import networkx as nx
+from typing import Dict, List, Tuple, Set
 import matplotlib.pyplot as plt
-import numpy as np
 import pulp
 
 
@@ -22,6 +21,9 @@ class SchedulingLayer:
     gates: List[Tuple[int, int]]  # List of gates in this layer
     time: float  # Time for this layer (max of gate times)
     layer_type: str  # 'cost' or 'mixer'
+    gate_start_times: Dict[Tuple[int, int], float] = (
+        None  # Start time for each gate in layer
+    )
 
 
 @dataclass
@@ -33,6 +35,7 @@ class SchedulingResult:
     total_time_before: float
     total_time_after: float
     improvement: float
+    gate_timings: Dict[Tuple[int, int], float] = None  # Start time for each gate
 
 
 class QAOAScheduler:
@@ -47,77 +50,93 @@ class QAOAScheduler:
         q1, q2 = gate
         return [g for g in available_gates if g != gate and q1 not in g and q2 not in g]
 
+    def get_lp_model(self) -> str:
+        edges = self.edges
+        model_str = [
+            f"QAOA Circuit with {self.circuit.n_qubits} qubits",
+            "\nGate times:",
+            *[f"t_{g} = {self.circuit.gamma_gates[g]}" for g in edges],
+            f"t_β = {self.circuit.beta_time}",
+            "\nMinimize: Z",
+            "\nSubject to:",
+            "\n1. Non-overlapping gates:",
+            *[
+                f"x_{g1} ≥ x_{g2} + {self.circuit.gamma_gates[g2]} - M⋅y_{g1}{g2}"
+                for g1 in edges
+                for g2 in edges
+                if g1 < g2 and (set(g1) & set(g2))
+            ],
+            *[
+                f"x_{g2} ≥ x_{g1} + {self.circuit.gamma_gates[g1]} - M⋅(1-y_{g1}{g2})"
+                for g1 in edges
+                for g2 in edges
+                if g1 < g2 and (set(g1) & set(g2))
+            ],
+            "\n2. Total time:",
+            *[
+                f"Z ≥ x_{g} + {self.circuit.gamma_gates[g]} + {self.circuit.beta_time}"
+                for g in edges
+            ],
+            "\n3. Variable domains:",
+            "x_g ≥ 0 for all gates g",
+            "y_gg' ∈ {0,1} for all conflicting gates g,g'",
+            "Z ≥ 0",
+            f"\nwhere M = {sum(self.circuit.gamma_gates.values())}",
+        ]
+        return "\n".join(model_str)
+
     def solve_lp(self) -> SchedulingResult:
-        """Solve scheduling using Linear Programming."""
         model = pulp.LpProblem("QAOA_Scheduling", pulp.LpMinimize)
+        edges = self.edges
 
-        # Decision variables
-        x = pulp.LpVariable.dicts("start", ((i, j) for i, j in self.edges), lowBound=0)
-
-        y = pulp.LpVariable.dicts(
-            "order",
-            (
-                (g1, g2)
-                for g1 in self.edges
-                for g2 in self._get_non_adjacent_gates(g1, set(self.edges))
-            ),
-            cat="Binary",
-        )
-
-        z = pulp.LpVariable("z", lowBound=0)  # Maximum completion time
-
-        # Big M constant
-        M = sum(self.circuit.gamma_gates.values()) + self.circuit.beta_time
-
-        # Objective: Minimize maximum completion time
+        x = pulp.LpVariable.dicts("start", edges, lowBound=0)
+        z = pulp.LpVariable("total_time", lowBound=0)
         model += z
 
-        # Constraints
-        # 1. Non-overlapping constraints for gates sharing qubits
-        for g1 in self.edges:
-            for g2 in self._get_non_adjacent_gates(g1, set(self.edges)):
-                t1 = self.circuit.gamma_gates[g1]
-                t2 = self.circuit.gamma_gates[g2]
-                model += x[g1] >= x[g2] + t2 - M * y[g1, g2]
-                model += x[g2] >= x[g1] + t1 - M * (1 - y[g1, g2])
+        M = sum(self.circuit.gamma_gates.values())
+        for g1 in edges:
+            for g2 in edges:
+                if g1 < g2 and (set(g1) & set(g2)):
+                    y = pulp.LpVariable(f"y_{g1}_{g2}", cat="Binary")
+                    model += x[g1] >= x[g2] + self.circuit.gamma_gates[g2] - M * y
+                    model += x[g2] >= x[g1] + self.circuit.gamma_gates[g1] - M * (1 - y)
 
-        # 2. Maximum completion time including mixer gates
-        for g in self.edges:
+        for g in edges:
             model += z >= x[g] + self.circuit.gamma_gates[g] + self.circuit.beta_time
 
-        # Solve model
         model.solve(pulp.PULP_CBC_CMD(msg=False))
-
         if pulp.LpStatus[model.status] != "Optimal":
             raise ValueError("Could not find optimal solution")
 
-        # Extract solution
-        start_times = {g: pulp.value(x[g]) for g in self.edges}
-
-        # Group gates into layers based on start times
-        layers = []
-        current_gates = set(self.edges)
-
-        while current_gates:
-            min_start = min(start_times[g] for g in current_gates)
-            layer_gates = {
-                g for g in current_gates if abs(start_times[g] - min_start) < 1e-6
-            }
-            layer_time = max(self.circuit.gamma_gates[g] for g in layer_gates)
-
-            layers.append(
-                SchedulingLayer(
-                    gates=list(layer_gates), time=layer_time, layer_type="cost"
+        gate_timings = {g: pulp.value(x[g]) for g in edges}
+        beta_starts = {}
+        for i in range(self.circuit.n_qubits):
+            qubit_gammas = [g for g in edges if i in g]
+            if qubit_gammas:
+                last_gamma_end = max(
+                    pulp.value(x[g]) + self.circuit.gamma_gates[g] for g in qubit_gammas
                 )
+                beta_starts[(i,)] = last_gamma_end
+
+        gate_timings.update(beta_starts)
+
+        layers = []
+        for g, start in sorted(
+            ((g, pulp.value(x[g])) for g in edges), key=lambda x: x[1]
+        ):
+            layer = SchedulingLayer(
+                gates=[g],
+                time=self.circuit.gamma_gates[g],
+                layer_type="cost",
+                gate_start_times={g: start},
             )
+            layers.append(layer)
 
-            current_gates -= layer_gates
-
-        # Add mixer layer
         mixer_layer = SchedulingLayer(
             gates=[(i,) for i in range(self.circuit.n_qubits)],
             time=self.circuit.beta_time,
             layer_type="mixer",
+            gate_start_times=beta_starts,
         )
 
         total_time_before = (
@@ -131,165 +150,198 @@ class QAOAScheduler:
             total_time_before=total_time_before,
             total_time_after=total_time_after,
             improvement=total_time_before - total_time_after,
+            gate_timings=gate_timings,
         )
 
-    def get_lp_model(self) -> str:
-        """Get the LP model formulation for the complete QAOA scheduling."""
+    def schedule_layered(self) -> SchedulingResult:
+        """Schedule gates in layers of non-intersecting edges."""
         edges = self.edges
+        gate_start_times = {}
+        layers = []
+        current_time = 0
 
-        model_str = []
-        model_str.append("Linear Programming Model for QAOA Gate Scheduling")
-        model_str.append("=" * 50)
-
-        # Variables
-        model_str.append("\nDecision Variables:")
-        model_str.append("x[g] = start time of gate g")
-        model_str.append("y[g,g'] = 1 if gate g is before g', 0 otherwise")
-        model_str.append("z = maximum completion time including mixer gates")
-        model_str.append("M = large constant for ordering constraints")
-
-        # Objective
-        model_str.append("\nObjective:")
-        model_str.append("Minimize z")
-
-        # Constraints
-        model_str.append("\nConstraints:")
-
-        # 1. Non-overlapping gates on same qubits
-        model_str.append("\n1. Ordering constraints for gates sharing qubits:")
-        for g1 in edges:
-            for g2 in self._get_non_adjacent_gates(g1, set(edges)):
-                t1 = self.circuit.gamma_gates[g1]
-                t2 = self.circuit.gamma_gates[g2]
-                model_str.append(f"   x_{g1} ≥ x_{g2} + {t2} - M·y_{g1},{g2}")
-                model_str.append(f"   x_{g2} ≥ x_{g1} + {t1} - M·(1-y_{g1},{g2})")
-
-        # 2. Maximum completion time considering mixer gates
-        model_str.append("\n2. Maximum completion time constraints:")
-        for g in edges:
-            t_g = self.circuit.gamma_gates[g]
-            model_str.append(f"   z ≥ x_{g} + {t_g} + {self.circuit.beta_time}")
-
-        # Variable domains
-        model_str.append("\nVariable Domains:")
-        model_str.append("x[g] ≥ 0 for all gates g")
-        model_str.append("y[g,g'] ∈ {0,1} for all gate pairs")
-        model_str.append("z ≥ 0")
-        model_str.append("M ≥ 0")
-
-        # Print optimal solution structure
-        model_str.append("\nOptimal Solution Structure:")
-        model_str.append(
-            f"Number of variables: {len(edges)} x variables + "
-            f"{sum(len(self._get_non_adjacent_gates(g, set(edges))) for g in edges)} y variables + 1 z variable"
-        )
-        model_str.append(
-            f"Number of constraints: "
-            f"{2*sum(len(self._get_non_adjacent_gates(g, set(edges))) for g in edges)} ordering constraints + "
-            f"{len(edges)} completion time constraints"
+        # Sort gates by duration for better packing
+        remaining_gates = sorted(
+            list(edges), key=lambda g: self.circuit.gamma_gates[g], reverse=True
         )
 
-        return "\n".join(model_str)
-
-    def schedule_greedy(self) -> SchedulingResult:
-        """Schedule gates using greedy approach."""
-        # Time before scheduling (sequential)
-        cost_time_before = sum(self.circuit.gamma_gates.values())
-        total_time_before = cost_time_before + self.circuit.beta_time
-
-        # Schedule cost gates
-        available_gates = set(self.circuit.gamma_gates.keys())
-        cost_layers = []
-
-        while available_gates:
+        # Schedule two-qubit gates in layers
+        while remaining_gates:
             layer_gates = []
+            used_qubits = set()
 
-            # Find gate with maximum time
-            max_gate = max(available_gates, key=lambda g: self.circuit.gamma_gates[g])
-            layer_gates.append(max_gate)
-            current_gates = {max_gate}
+            # Build current layer with non-intersecting gates
+            for gate in remaining_gates[:]:
+                q1, q2 = gate
+                if q1 not in used_qubits and q2 not in used_qubits:
+                    layer_gates.append(gate)
+                    used_qubits.add(q1)
+                    used_qubits.add(q2)
+                    remaining_gates.remove(gate)
 
-            # Find non-adjacent gates
-            non_adj_gates = self._get_non_adjacent_gates(max_gate, available_gates)
+            if layer_gates:
+                # Get layer duration (max gate time in layer)
+                layer_time = max(self.circuit.gamma_gates[g] for g in layer_gates)
 
-            # Add non-adjacent gates with maximum times
-            while non_adj_gates:
-                next_gate = max(
-                    non_adj_gates, key=lambda g: self.circuit.gamma_gates[g]
+                # Set start times for all gates in layer
+                for gate in layer_gates:
+                    gate_start_times[gate] = current_time
+
+                layer = SchedulingLayer(
+                    gates=layer_gates,
+                    time=layer_time,
+                    layer_type="cost",
+                    gate_start_times={g: current_time for g in layer_gates},
                 )
-                layer_gates.append(next_gate)
-                current_gates.add(next_gate)
+                layers.append(layer)
 
-                new_non_adj = set()
-                for g in non_adj_gates:
-                    if g != next_gate and all(
-                        len(set(g).intersection(set(cg))) == 0 for cg in current_gates
-                    ):
-                        new_non_adj.add(g)
-                non_adj_gates = list(new_non_adj)
+                current_time += layer_time
 
-            # Calculate layer time
-            layer_time = max(self.circuit.gamma_gates[g] for g in layer_gates)
+        # Schedule beta gates after all gamma gates
+        beta_start_times = {(i,): current_time for i in range(self.circuit.n_qubits)}
 
-            # Add cost layer
-            cost_layers.append(
-                SchedulingLayer(gates=layer_gates, time=layer_time, layer_type="cost")
-            )
-
-            # Remove used gates
-            available_gates -= current_gates
-
-        # Add mixer layer
         mixer_layer = SchedulingLayer(
-            gates=[(i,) for i in range(self.circuit.n_qubits)],  # Single-qubit gates
+            gates=[(i,) for i in range(self.circuit.n_qubits)],
             time=self.circuit.beta_time,
             layer_type="mixer",
+            gate_start_times=beta_start_times,
         )
 
-        # Calculate total time
-        total_time_after = (
-            sum(layer.time for layer in cost_layers) + self.circuit.beta_time
+        total_time_before = (
+            sum(self.circuit.gamma_gates.values()) + self.circuit.beta_time
         )
+        total_time_after = current_time + self.circuit.beta_time
 
         return SchedulingResult(
-            cost_layers=cost_layers,
+            cost_layers=layers,
             mixer_layer=mixer_layer,
             total_time_before=total_time_before,
             total_time_after=total_time_after,
             improvement=total_time_before - total_time_after,
+            gate_timings={**gate_start_times, **beta_start_times},
         )
 
-    def visualize_schedule_comparison(self, result: SchedulingResult):
-        """
-        Visualize schedules with qubits as horizontal lines and gates as blocks.
-        Shows both sequential and parallel schedules for comparison.
-        """
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 8))
+    def schedule_greedy(self) -> SchedulingResult:
+        """Schedule gates using greedy algorithm."""
+        cost_time_before = sum(self.circuit.gamma_gates.values())
+        total_time_before = cost_time_before + self.circuit.beta_time
+        qubit_available = {i: 0.0 for i in range(self.circuit.n_qubits)}
+        gate_start_times = {}
+        layers = []
 
-        # Common styling
+        # Track all gamma gates for each qubit
+        qubit_gammas = {i: [] for i in range(self.circuit.n_qubits)}
+
+        # Schedule cost gates
+        remaining_gates = sorted(
+            list(self.circuit.gamma_gates.keys()),
+            key=lambda g: self.circuit.gamma_gates[g],
+            reverse=True,
+        )
+
+        while remaining_gates:
+            layer_gates = []
+            used_qubits = set()
+
+            i = 0
+            while i < len(remaining_gates):
+                gate = remaining_gates[i]
+                q1, q2 = gate
+
+                if q1 in used_qubits or q2 in used_qubits:
+                    i += 1
+                    continue
+
+                start_time = max(qubit_available[q1], qubit_available[q2])
+                end_time = start_time + self.circuit.gamma_gates[gate]
+
+                layer_gates.append(gate)
+                gate_start_times[gate] = start_time
+                used_qubits.add(q1)
+                used_qubits.add(q2)
+
+                qubit_gammas[q1].append((start_time, end_time))
+                qubit_gammas[q2].append((start_time, end_time))
+
+                qubit_available[q1] = end_time
+                qubit_available[q2] = end_time
+
+                remaining_gates.pop(i)
+
+            if layer_gates:
+                layer = SchedulingLayer(
+                    gates=layer_gates,
+                    time=max(qubit_available[q] for q in used_qubits)
+                    - min(gate_start_times[g] for g in layer_gates),
+                    layer_type="cost",
+                    gate_start_times={g: gate_start_times[g] for g in layer_gates},
+                )
+                layers.append(layer)
+
+        # Schedule beta gates after all gammas for each qubit
+        beta_start_times = {}
+        for qubit in range(self.circuit.n_qubits):
+            if qubit_gammas[qubit]:
+                last_gamma_end = max(end for _, end in qubit_gammas[qubit])
+                beta_start_times[(qubit,)] = last_gamma_end
+            else:
+                beta_start_times[(qubit,)] = 0
+
+        mixer_layer = SchedulingLayer(
+            gates=[(i,) for i in range(self.circuit.n_qubits)],
+            time=self.circuit.beta_time,
+            layer_type="mixer",
+            gate_start_times=beta_start_times,
+        )
+
+        total_time_after = max(
+            t + self.circuit.beta_time for t in beta_start_times.values()
+        )
+
+        return SchedulingResult(
+            cost_layers=layers,
+            mixer_layer=mixer_layer,
+            total_time_before=total_time_before,
+            total_time_after=total_time_after,
+            improvement=total_time_before - total_time_after,
+            gate_timings={**gate_start_times, **beta_start_times},
+        )
+
+    def visualize_schedule_comparison(
+        self, results: Dict[str, SchedulingResult], save_path=None
+    ):
+        """
+        Visualize different scheduling approaches.
+
+        Args:
+            results: Dictionary mapping schedule type to SchedulingResult
+            save_path: Optional path to save plot as PDF
+        """
+        n_schedules = len(results)
+        fig, axes = plt.subplots(n_schedules, 1, figsize=(15, 4 * n_schedules))
+        if n_schedules == 1:
+            axes = [axes]
+
         gate_height = 0.5
         qubit_spacing = 1.0
-        connector_width = 0.1  # Width of gate endpoint connectors
+        connector_width = 0.1
 
         def draw_qubit_lines(ax, max_time):
-            """Draw horizontal lines representing qubits."""
             for i in range(self.circuit.n_qubits):
                 ax.hlines(
                     y=i * qubit_spacing,
                     xmin=0,
                     xmax=max_time,
                     color="black",
-                    linestyle="-",
                     linewidth=1,
                 )
                 ax.text(-0.5, i * qubit_spacing, f"Q{i}", ha="right", va="center")
 
         def draw_cost_gate(ax, gate, start_time, duration):
-            """Draw a two-qubit cost gate with endpoint connectors."""
             q1, q2 = gate
             q_min, q_max = min(q1, q2), max(q1, q2)
 
-            # Draw endpoint connectors
+            # Draw endpoints
             for q in [q1, q2]:
                 rect = plt.Rectangle(
                     (start_time, q * qubit_spacing - gate_height / 2),
@@ -311,14 +363,13 @@ class QAOAScheduler:
                 )
                 ax.add_patch(rect)
 
-            # Draw vertical connection between qubits
-            if abs(q1 - q2) > 1:  # If qubits aren't adjacent, use bent connector
+            # Draw connection
+            if abs(q1 - q2) > 1:
                 ax.vlines(
                     start_time,
                     q_min * qubit_spacing,
                     q_max * qubit_spacing,
                     color="red",
-                    linestyle="-",
                     alpha=0.5,
                 )
                 ax.vlines(
@@ -326,10 +377,9 @@ class QAOAScheduler:
                     q_min * qubit_spacing,
                     q_max * qubit_spacing,
                     color="red",
-                    linestyle="-",
                     alpha=0.5,
                 )
-            else:  # For adjacent qubits, fill the space
+            else:
                 rect = plt.Rectangle(
                     (start_time, q_min * qubit_spacing),
                     duration,
@@ -340,7 +390,6 @@ class QAOAScheduler:
                 )
                 ax.add_patch(rect)
 
-            # Add gate label
             ax.text(
                 start_time + duration / 2,
                 (q_min + q_max) * qubit_spacing / 2,
@@ -349,16 +398,9 @@ class QAOAScheduler:
                 va="center",
             )
 
-        def draw_mixer_gate(ax, qubit, start_time, duration, last_gamma_time=None):
-            """Draw a single-qubit mixer gate."""
-            # If we have last gamma time, try to place mixer closer to it
-            if last_gamma_time is not None and last_gamma_time + duration <= start_time:
-                actual_start = last_gamma_time
-            else:
-                actual_start = start_time
-
+        def draw_mixer_gate(ax, qubit, start_time, duration):
             rect = plt.Rectangle(
-                (actual_start, qubit * qubit_spacing - gate_height / 3),
+                (start_time, qubit * qubit_spacing - gate_height / 3),
                 duration,
                 2 * gate_height / 3,
                 facecolor="lightblue",
@@ -367,58 +409,55 @@ class QAOAScheduler:
             )
             ax.add_patch(rect)
             ax.text(
-                actual_start + duration / 2,
+                start_time + duration / 2,
                 qubit * qubit_spacing,
                 f"β={duration}",
                 ha="center",
                 va="center",
             )
 
-        # 1. Sequential Schedule
-        current_time = 0
-        max_gamma_time = 0
-        draw_qubit_lines(ax1, result.total_time_before)
+        # Draw each schedule
+        for ax, (name, result) in zip(axes, results.items()):
+            if name == "Sequential":
+                # Sequential Schedule
+                current_time = 0
+                draw_qubit_lines(ax, result.total_time_before)
 
-        # Draw cost gates sequentially
-        for gate, time in self.circuit.gamma_gates.items():
-            draw_cost_gate(ax1, gate, current_time, time)
-            max_gamma_time = max(max_gamma_time, current_time + time)
-            current_time += time
+                for gate, time in self.circuit.gamma_gates.items():
+                    draw_cost_gate(ax, gate, current_time, time)
+                    current_time += time
 
-        # Draw mixer gates after all gammas
-        for i in range(self.circuit.n_qubits):
-            draw_mixer_gate(ax1, i, max_gamma_time, self.circuit.beta_time)
+                for i in range(self.circuit.n_qubits):
+                    draw_mixer_gate(ax, i, current_time, self.circuit.beta_time)
 
-        ax1.set_title(f"Sequential Schedule (Total Time: {result.total_time_before})")
-        ax1.set_xlim(-1, result.total_time_before + 1)
-        ax1.set_ylim(-1, (self.circuit.n_qubits - 0.5) * qubit_spacing)
-        ax1.set_xlabel("Time")
-        ax1.grid(True, alpha=0.3, which="both")
+                ax.set_title(
+                    f"Sequential Schedule (Total Time: {result.total_time_before})"
+                )
+                ax.set_xlim(-1, result.total_time_before + 1)
+            else:
+                # Layered or Greedy Schedule
+                draw_qubit_lines(ax, result.total_time_after)
 
-        # 2. Parallel Schedule
-        current_time = 0
-        draw_qubit_lines(ax2, result.total_time_after)
+                for layer in result.cost_layers:
+                    for gate in layer.gates:
+                        start_time = layer.gate_start_times[gate]
+                        draw_cost_gate(
+                            ax, gate, start_time, self.circuit.gamma_gates[gate]
+                        )
 
-        # Draw cost gates in layers
-        for layer in result.cost_layers:
-            for gate in layer.gates:
-                draw_cost_gate(ax2, gate, current_time, self.circuit.gamma_gates[gate])
-            current_time += layer.time
+                for i in range(self.circuit.n_qubits):
+                    beta_start = result.mixer_layer.gate_start_times.get((i,), 0)
+                    draw_mixer_gate(ax, i, beta_start, self.circuit.beta_time)
 
-        # Draw mixer gates
-        for i in range(self.circuit.n_qubits):
-            draw_mixer_gate(ax2, i, current_time, self.circuit.beta_time)
+                ax.set_title(f"{name} Schedule (Total Time: {result.total_time_after})")
+                ax.set_xlim(-1, result.total_time_after + 1)
 
-        ax2.set_title(f"Parallel Schedule (Total Time: {result.total_time_after})")
-        ax2.set_xlim(-1, result.total_time_after + 1)
-        ax2.set_ylim(-1, (self.circuit.n_qubits - 0.5) * qubit_spacing)
-        ax2.set_xlabel("Time")
-        ax2.grid(True, alpha=0.3, which="both")
+            ax.set_ylim(-1, (self.circuit.n_qubits - 0.5) * qubit_spacing)
+            ax.set_xlabel("Time")
+            ax.grid(True, alpha=0.3)
 
-        # Overall title
-        fig.suptitle(
-            f"QAOA Circuit Schedule\nTime Improvement: {result.improvement}",
-            fontsize=14,
-        )
         plt.tight_layout()
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(save_path, format="pdf", bbox_inches="tight", dpi=300)
         plt.show()

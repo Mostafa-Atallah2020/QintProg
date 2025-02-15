@@ -1,8 +1,10 @@
 import networkx as nx
 import matplotlib.pyplot as plt
-from typing import Optional, Dict, List, Tuple
+import numpy as np
+from typing import Optional, Dict, Tuple
 from .coloring import MaxColoring
 from .lp_coloring import ColoringLP
+from .qaoa_scheduling import QAOACircuit
 
 
 class GraphVisualizer:
@@ -200,3 +202,108 @@ def compare_solutions(exhaustive_solver: MaxColoring, lp_solver: ColoringLP):
     """Convenience function to compare solutions."""
     visualizer = GraphVisualizer()
     return visualizer.compare_solutions(exhaustive_solver, lp_solver)
+
+
+def visualize_cyclic_graph(circuit: QAOACircuit, save_path: str = None):
+    """
+    Visualize a cyclic graph with edge weights from the QAOA circuit.
+
+    Args:
+        circuit (QAOACircuit): The QAOA circuit containing the graph structure
+        save_path (str, optional): If provided, save the plot to this path
+    """
+    plt.figure(figsize=(6, 6))
+    n = circuit.n_qubits
+    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    pos = {i: (np.cos(angles[i]), np.sin(angles[i])) for i in range(n)}
+
+    for i in range(n):
+        plt.plot(pos[i][0], pos[i][1], "ko", markersize=20)
+        plt.text(pos[i][0], pos[i][1], f"Q{i}", ha="center", va="center", color="white")
+
+    for (i, j), gamma in circuit.gamma_gates.items():
+        x = [pos[i][0], pos[j][0]]
+        y = [pos[i][1], pos[j][1]]
+        plt.plot(x, y, "b-", linewidth=2)
+        mid_x = (pos[i][0] + pos[j][0]) / 2
+        mid_y = (pos[i][1] + pos[j][1]) / 2
+        plt.text(
+            mid_x,
+            mid_y,
+            f"γ={gamma}",
+            ha="center",
+            va="center",
+            bbox=dict(facecolor="white", alpha=0.7),
+        )
+
+    plt.axis("equal")
+    plt.axis("off")
+    plt.title(f"Cyclic Graph: C{n}")
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, bbox_inches="tight", dpi=300)
+        plt.show()
+    else:
+        plt.show()
+
+
+def visualize_complete_graph(
+    circuit: QAOACircuit, save_path: str = None, figsize=(8, 8)
+):
+    """
+    Visualize a complete graph with edge weights from the QAOA circuit.
+
+    Args:
+        circuit (QAOACircuit): The QAOA circuit containing the graph structure
+        save_path (str, optional): If provided, save the plot to this path
+        figsize (tuple): Figure size for the plot (width, height)
+    """
+    # Create graph
+    G = nx.Graph()
+
+    # Add nodes
+    for i in range(circuit.n_qubits):
+        G.add_node(i)
+
+    # Add edges with weights
+    for (i, j), weight in circuit.gamma_gates.items():
+        G.add_edge(i, j, weight=weight)
+
+    # Create layout - circular layout works well for complete graphs
+    pos = nx.circular_layout(G)
+
+    # Setup plot
+    plt.figure(figsize=figsize)
+
+    # Draw nodes
+    nx.draw_networkx_nodes(
+        G, pos, node_color="lightblue", node_size=500, edgecolors="black"
+    )
+
+    # Draw edges with varying thickness based on weights
+    max_weight = max(circuit.gamma_gates.values())
+    edge_weights = [circuit.gamma_gates[edge] for edge in G.edges()]
+    normalized_weights = [2.0 * w / max_weight for w in edge_weights]
+
+    nx.draw_networkx_edges(
+        G, pos, width=normalized_weights, edge_color="gray", alpha=0.7
+    )
+
+    # Add edge labels (weights)
+    edge_labels = {(i, j): f"{w:.1f}" for (i, j), w in circuit.gamma_gates.items()}
+    nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, font_size=8)
+
+    # Add node labels
+    node_labels = {i: f"Q{i}" for i in range(circuit.n_qubits)}
+    nx.draw_networkx_labels(G, pos, node_labels)
+
+    plt.title(f"Complete Graph K{circuit.n_qubits} with Gate Times")
+    plt.axis("off")
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, bbox_inches="tight", dpi=300)
+        plt.show()
+    else:
+        plt.show()

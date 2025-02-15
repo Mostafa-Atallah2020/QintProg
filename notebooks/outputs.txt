@@ -1,0 +1,33 @@
+
+Summary Statistics:
+==================================================
+
+Cyclic Graphs:
+Average improvement: 32.5%
+Max improvement: 60.1%
+Average number of layers: 4.5
+
+Correlations with improvement percentage:
+n_vertices                0.923946
+n_edges                   0.923946
+time_range                0.026895
+improvement_percentage    1.000000
+Name: improvement_percentage, dtype: float64
+
+Complete Graphs:
+Average improvement: 37.1%
+Max improvement: 63.1%
+Average number of layers: 8.5
+
+Correlations with improvement percentage:
+n_vertices                0.928867
+n_edges                   0.887546
+time_range                0.168479
+improvement_percentage    1.000000
+Name: improvement_percentage, dtype: float64
+
+text/plain: ['<Figure size 800x600 with 1 Axes>']
+text/plain: ['<Figure size 800x600 with 1 Axes>']
+text/plain: ['<Figure size 800x600 with 1 Axes>']
+text/plain: ['<Figure size 800x600 with 1 Axes>']
+text/plain: ['<Figure size 1000x600 with 1 Axes>']
