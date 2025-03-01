@@ -308,15 +308,30 @@ class QAOAScheduler:
         )
 
     def visualize_schedule_comparison(
-        self, results: Dict[str, SchedulingResult], save_path=None
+        self,
+        results: Dict[str, SchedulingResult],
+        selected_schedules: List[str] = None,
+        save_path=None,
     ):
         """
         Visualize different scheduling approaches.
 
         Args:
             results: Dictionary mapping schedule type to SchedulingResult
+            selected_schedules: List of schedule names to display (displays all if None)
             save_path: Optional path to save plot as PDF
         """
+        # Filter results based on selected_schedules
+        if selected_schedules is not None:
+            results = {
+                name: result
+                for name, result in results.items()
+                if name in selected_schedules
+            }
+
+        if not results:
+            raise ValueError("No schedules selected for visualization")
+
         n_schedules = len(results)
         fig, axes = plt.subplots(n_schedules, 1, figsize=(15, 4 * n_schedules))
         if n_schedules == 1:
