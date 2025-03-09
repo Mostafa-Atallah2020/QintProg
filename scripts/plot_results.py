@@ -5,11 +5,12 @@ import json
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+import matplotlib as mpl
 
 
-def load_results(data_dir, n_vertices):
+def load_results(data_dir, n_vertices, results_type="greedy"):
     """Load results from a JSON file."""
-    results_path = Path(data_dir) / "results" / f"results_v{n_vertices}.json"
+    results_path = Path(data_dir) / f"results_{results_type}" / f"results_{results_type}_v{n_vertices}.json"
 
     try:
         with open(results_path, "r") as f:
@@ -26,108 +27,197 @@ def load_results(data_dir, n_vertices):
         return None, None, None
 
 
-def plot_results(data_dir, vertex_range, n_samples=1000, output_format="pdf"):
-    """Create plot using saved results."""
+def plot_results(data_dir, vertex_range, results_type="greedy", n_samples=1000, output_format="pdf"):
+    """Create publication-quality plot using saved results."""
     data_dir = Path(data_dir)
-
-    # Set publication-quality style
-    plt.rcParams.update(
-        {
-            "figure.figsize": (10, 6),
-            "figure.dpi": 300,
-            "font.size": 16,
-            "font.family": "serif",
-            "axes.labelsize": 18,
-            "axes.titlesize": 20,
-            "axes.grid": True,
-            "grid.alpha": 0.3,
-            "grid.color": "gray",
-            "grid.linestyle": "--",
-            "axes.facecolor": "white",
-            "figure.facecolor": "white",
-            "axes.spines.top": True,
-            "axes.spines.right": True,
-            "axes.spines.left": True,
-            "axes.spines.bottom": True,
-        }
-    )
-
-    # Create figure
-    fig, ax = plt.subplots()
-    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b"]
+    
+    # Reset matplotlib to default settings first
+    mpl.rcParams.update(mpl.rcParamsDefault)
+    
+    # Now set publication-quality style
+    plt.rcParams.update({
+        # Figure properties
+        "figure.figsize": (10, 6),
+        "figure.dpi": 600,
+        "savefig.dpi": 600,
+        
+        # Font properties
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "DejaVu Serif"],
+        "font.size": 12,
+        "axes.labelsize": 14,
+        "axes.titlesize": 16,
+        "xtick.labelsize": 12,
+        "ytick.labelsize": 12,
+        "legend.fontsize": 12,
+        
+        # Lines and markers
+        "lines.linewidth": 2,
+        "lines.markersize": 8,
+        "lines.markeredgewidth": 1.5,
+        
+        # Grid and spines
+        "axes.grid": True,
+        "grid.alpha": 0.3,
+        "grid.color": "gray",
+        "grid.linestyle": "--",
+        "grid.linewidth": 0.8,
+        
+        # Background
+        "axes.facecolor": "white",
+        "figure.facecolor": "white",
+        "savefig.facecolor": "white",
+        
+        # Axes and ticks
+        "axes.linewidth": 1.0,
+        "xtick.major.width": 1.0,
+        "ytick.major.width": 1.0,
+        "xtick.minor.width": 0.8,
+        "ytick.minor.width": 0.8,
+        "xtick.major.size": 5,
+        "ytick.major.size": 5,
+        "xtick.minor.size": 3,
+        "ytick.minor.size": 3,
+        
+        # Legend
+        "legend.frameon": True,
+        "legend.framealpha": 1.0,
+        "legend.edgecolor": "black",
+        "legend.fancybox": False,
+    })
+    
+    # Create figure with proper size
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Use high-quality colors for publications
+    colors = [
+        "#0072B2",  # Blue
+        "#D55E00",  # Orange-red
+        "#009E73",  # Green
+        "#CC79A7",  # Pink
+        "#F0E442",  # Yellow
+        "#56B4E9",  # Light blue
+    ]
+    
+    # Use distinct marker styles
     markers = ["o", "s", "^", "D", "v", "<"]
-
+    
     # Track if we've found any data to plot
     data_found = False
-
+    
     # Plot for each vertex count
+    max_y_value = 0
+    
     for i, n_vertices in enumerate(range(vertex_range[0], vertex_range[1] + 1)):
-        edge_counts, means, stds = load_results(data_dir, n_vertices)
-
-        if edge_counts is not None:
+        # Load saved results
+        try:
+            edge_counts, means, stds = load_results(data_dir, n_vertices, results_type)
+            
+            if edge_counts is None:
+                print(f"No results found for {n_vertices} vertices, skipping...")
+                continue
+                
+            # Calculate asymmetric error bars to prevent negative values
+            lower_errors = np.minimum(means * 100, stds * 100)
+            upper_errors = stds * 100
+            
+            # Update max y value
+            max_y_value = max(max_y_value, np.max((means + stds) * 100) * 1.2)
+            
+            # Plot with publication-quality formatting
             ax.errorbar(
                 edge_counts,
-                means * 100,  # Convert to percentage
-                yerr=stds * 100,
-                fmt=f"{markers[i % len(markers)]}-",
+                means * 100,
+                yerr=[lower_errors, upper_errors],
+                fmt=markers[i % len(markers)] + '-',  # Added '-' to connect points with lines
                 capsize=4,
                 capthick=1.5,
                 elinewidth=1.5,
                 markersize=8,
+                markeredgewidth=1.0,
+                markeredgecolor="black",
+                markerfacecolor=colors[i % len(colors)],
                 color=colors[i % len(colors)],
                 label=f"{n_vertices} Vertices",
-                markeredgewidth=1.5,
-                markeredgecolor="black",
+                zorder=3,  # Ensure data points appear above grid
             )
             data_found = True
+        except FileNotFoundError:
+            print(f"Results file for vertices={n_vertices} not found, skipping...")
 
     if not data_found:
-        print(
-            f"Error: No data found in {data_dir}/results for vertex range {vertex_range}"
-        )
+        print(f"Error: No data found in {data_dir}/results_{results_type} for vertex range {vertex_range}")
         return
 
-    # Customize plot
-    ax.set_xlabel("Number of Edges", labelpad=10)
-    ax.set_ylabel("LP vs Layered Improvement (%)", labelpad=10)
-    ax.set_title("QAOA Circuit Scheduling Comparison", pad=15)
-
+    # Customize plot for publication quality
+    ax.set_xlabel("Number of Edges", fontweight="bold")
+    
+    if results_type == "greedy":
+        ax.set_ylabel("LP vs Greedy Improvement (%)", fontweight="bold")
+    else:
+        ax.set_ylabel("LP vs Layered Improvement (%)", fontweight="bold")
+        
+    ax.set_title("QAOA Circuit Scheduling Comparison", fontweight="bold")
+    
+    # # Set y-axis limits with proper padding and ensure it doesn't go below zero
+    # ax.set_ylim(bottom=0, top=max_y_value)
+    
+    # Use integer ticks for x-axis
     ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
-    ax.grid(True, linestyle="--", alpha=0.7, linewidth=1.5)
-    ax.margins(x=0.05)
-
-    # Customize legend
-    ax.legend(
+    
+    # Add minor grid lines
+    ax.grid(True, which="major", linestyle="--", alpha=0.7, zorder=0)
+    ax.minorticks_on()
+    
+    # Optimize legend positioning and style - ENSURE IT APPEARS
+    leg = ax.legend(
         frameon=True,
         edgecolor="black",
         fancybox=False,
         loc="best",
-        ncol=2,
-        columnspacing=1,
-        handletextpad=0.5,
+        ncol=2 if vertex_range[1] - vertex_range[0] + 1 > 3 else 1,
+        title="Graph Size",
+        borderpad=0.8,
+        labelspacing=0.5,
     )
-
+    
+    # Explicitly make the legend title bold
+    if leg is not None and leg.get_title() is not None:
+        leg.get_title().set_fontweight("bold")
+    
+    # Add border around the plot
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.0)
+        spine.set_visible(True)
+        
+    # Tight layout for better spacing
     plt.tight_layout()
 
-    # Save plot
+    # Save plot - making sure we handle the plot saving correctly
     plot_dir = data_dir / "plots"
     plot_dir.mkdir(exist_ok=True, parents=True)
-    plot_path = (
-        plot_dir
-        / f"improvement_analysis_v{vertex_range[0]}-{vertex_range[1]}_sampled{n_samples}.{output_format}"
-    )
-
+    
+    # Update filename to include the results type
+    if results_type == "greedy":
+        filename = f"greedy_lp_improvement_v{vertex_range[0]}-{vertex_range[1]}_sampled{n_samples}.{output_format}"
+    else:
+        filename = f"improvement_analysis_v{vertex_range[0]}-{vertex_range[1]}_sampled{n_samples}.{output_format}"
+        
+    plot_path = plot_dir / filename
+    
+    # Save the figure
     plt.savefig(
-        plot_path,
+        str(plot_path),  # Convert Path to string
         bbox_inches="tight",
-        dpi=300,
-        facecolor="white",
+        dpi=600,         # Higher DPI for publication
+        format=output_format,
+        transparent=False,
     )
 
-    print(f"Plot saved to: {plot_path}")
-
-    # Show plot if running interactively
-    plt.show()
+    print(f"Publication-quality plot saved to: {plot_path}")
+    
+    # Close the plot to free memory
+    plt.close()
 
 
 def main():
@@ -164,14 +254,21 @@ def main():
         "--format",
         type=str,
         default="pdf",
-        choices=["pdf", "png", "jpg", "svg"],
+        choices=["pdf", "png", "jpg", "svg", "eps"],
         help="Output file format (default: pdf)",
+    )
+    parser.add_argument(
+        "--type",
+        type=str,
+        default="greedy",
+        choices=["greedy", "layered"],
+        help="Results type to plot (default: greedy)",
     )
 
     args = parser.parse_args()
 
     vertex_range = (args.min_vertices, args.max_vertices)
-    plot_results(args.data_dir, vertex_range, args.samples, args.format)
+    plot_results(args.data_dir, vertex_range, args.type, args.samples, args.format)
 
 
 if __name__ == "__main__":
