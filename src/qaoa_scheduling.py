@@ -314,7 +314,7 @@ class QAOAScheduler:
         save_path=None,
     ):
         """
-        Create publication-quality visualizations of different scheduling approaches.
+        Create publication-quality visualizations with proportionally sized operation blocks.
 
         Args:
             results: Dictionary mapping schedule type to SchedulingResult
@@ -322,14 +322,14 @@ class QAOAScheduler:
             save_path: Optional path to save plot as PDF
         """
         # Set publication-quality plot parameters
-        plt.rcParams['font.family'] = 'serif'
-        plt.rcParams['font.size'] = 11
-        plt.rcParams['axes.linewidth'] = 1.5
-        plt.rcParams['axes.labelsize'] = 12
-        plt.rcParams['xtick.labelsize'] = 10
-        plt.rcParams['ytick.labelsize'] = 10
-        plt.rcParams['figure.dpi'] = 300
-        
+        plt.rcParams["font.family"] = "serif"
+        plt.rcParams["font.size"] = 11
+        plt.rcParams["axes.linewidth"] = 1.5
+        plt.rcParams["axes.labelsize"] = 12
+        plt.rcParams["xtick.labelsize"] = 10
+        plt.rcParams["ytick.labelsize"] = 10
+        plt.rcParams["figure.dpi"] = 300
+
         # Filter results based on selected_schedules
         if selected_schedules is not None:
             results = {
@@ -342,48 +342,82 @@ class QAOAScheduler:
             raise ValueError("No schedules selected for visualization")
 
         n_schedules = len(results)
-        fig, axes = plt.subplots(n_schedules, 1, figsize=(10, 3.5 * n_schedules))
+        # Add extra width to accommodate the legend outside the plot
+        fig, axes = plt.subplots(n_schedules, 1, figsize=(12, 3.5 * n_schedules))
         if n_schedules == 1:
             axes = [axes]
 
-        gate_height = 0.5
+        # Base qubit spacing
         qubit_spacing = 1.0
         connector_width = 0.1
 
+        # Minimum and maximum gate heights for scaling
+        min_gate_height = 0.2
+        max_gate_height = 0.6
+
         # Color definitions for better aesthetics
         colors = {
-            'two_qubit': {'edge': '#D62728', 'fill': '#FFCCCC'},  # Red theme
-            'single_qubit': {'edge': '#1F77B4', 'fill': '#BBDEFB'},  # Blue theme
-            'qubit_line': '#333333',
-            'time_grid': '#DDDDDD'
+            "two_qubit": {"edge": "#D62728", "fill": "#FFCCCC"},  # Red theme
+            "single_qubit": {"edge": "#1F77B4", "fill": "#BBDEFB"},  # Blue theme
+            "qubit_line": "#333333",
+            "time_grid": "#DDDDDD",
         }
+
+        def get_scale_factor(total_time, gate_times):
+            """Calculate scaling factor to appropriately size gates."""
+            if not gate_times:
+                return 1.0
+
+            max_time = max(gate_times.values()) if gate_times else 1.0
+            min_time = min(gate_times.values()) if gate_times else 1.0
+
+            # If all gates have the same time, use a fixed mid-size
+            if max_time == min_time:
+                return 0.4
+
+            # Calculate a normalization factor that maps the min time to min_gate_height
+            # and max time to max_gate_height
+            time_range = max_time - min_time
+            height_range = max_gate_height - min_gate_height
+
+            return height_range / time_range
 
         def draw_qubit_lines(ax, max_time):
             """Draw horizontal lines representing qubits with labels."""
+            # Set left margin for the plot to accommodate labels
+            ax.set_xlim(-0.8, max_time + 0.5)
+
             for i in range(self.circuit.n_qubits):
+                # Draw qubit lines starting at position 0
                 ax.hlines(
                     y=i * qubit_spacing,
                     xmin=0,
                     xmax=max_time,
-                    color=colors['qubit_line'],
+                    color=colors["qubit_line"],
                     linewidth=1,
                     alpha=0.7,
-                    linestyle='-'
-                )
-                ax.text(
-                    -0.5, 
-                    i * qubit_spacing, 
-                    f"Q{i}", 
-                    ha="right", 
-                    va="center", 
-                    fontweight='bold'
+                    linestyle="-",
                 )
 
-        def draw_cost_gate(ax, gate, start_time, duration):
-            """Draw two-qubit gates with improved visualization for non-adjacent qubits."""
+                # Position qubit labels clearly outside the plot area
+                ax.text(
+                    -0.2,
+                    i * qubit_spacing,
+                    f"Q{i}",
+                    ha="right",
+                    va="center",
+                    fontweight="bold",
+                    bbox=dict(facecolor="white", alpha=1.0, edgecolor="none", pad=2),
+                )
+
+        def draw_cost_gate(ax, gate, start_time, duration, scale_factor):
+            """Draw two-qubit gates with size proportional to their duration."""
             q1, q2 = gate
             q_min, q_max = min(q1, q2), max(q1, q2)
-            
+
+            # Calculate gate height proportional to its duration
+            gate_height = min_gate_height + (duration * scale_factor)
+
             # For non-adjacent qubits, shade the entire area with connections
             if abs(q1 - q2) > 1:
                 # Add semi-transparent shaded region connecting the qubits
@@ -391,36 +425,52 @@ class QAOAScheduler:
                     (start_time, q_min * qubit_spacing),
                     duration,
                     (q_max - q_min) * qubit_spacing,
-                    facecolor=colors['two_qubit']['fill'],
-                    edgecolor=colors['two_qubit']['edge'],
+                    facecolor=colors["two_qubit"]["fill"],
+                    edgecolor=colors["two_qubit"]["edge"],
                     alpha=0.3,
-                    linestyle='dashed',
-                    linewidth=1.5
+                    linestyle="dashed",
+                    linewidth=1.5,
                 )
                 ax.add_patch(rect)
-                
+
                 # Add markers at each qubit position
                 for q in [q1, q2]:
                     rect = plt.Rectangle(
                         (start_time, q * qubit_spacing - gate_height / 2),
                         duration,
                         gate_height,
-                        facecolor=colors['two_qubit']['fill'],
-                        edgecolor=colors['two_qubit']['edge'],
+                        facecolor=colors["two_qubit"]["fill"],
+                        edgecolor=colors["two_qubit"]["edge"],
                         alpha=0.7,
-                        linewidth=1.5
+                        linewidth=1.5,
                     )
                     ax.add_patch(rect)
             else:
                 # For adjacent qubits, draw a solid connection
+                edge_height = gate_height * 0.5  # Reduce the height on each qubit
+
+                # Draw boxes at each qubit position
+                for q in [q1, q2]:
+                    rect = plt.Rectangle(
+                        (start_time, q * qubit_spacing - edge_height / 2),
+                        duration,
+                        edge_height,
+                        facecolor=colors["two_qubit"]["fill"],
+                        edgecolor=colors["two_qubit"]["edge"],
+                        alpha=0.7,
+                        linewidth=1.5,
+                    )
+                    ax.add_patch(rect)
+
+                # Draw the connection between qubits
                 rect = plt.Rectangle(
-                    (start_time, q_min * qubit_spacing),
+                    (start_time, q_min * qubit_spacing + edge_height / 2),
                     duration,
-                    (q_max - q_min) * qubit_spacing,
-                    facecolor=colors['two_qubit']['fill'],
-                    edgecolor=colors['two_qubit']['edge'],
-                    alpha=0.7,
-                    linewidth=1.5
+                    (q_max - q_min) * qubit_spacing - edge_height,
+                    facecolor=colors["two_qubit"]["fill"],
+                    edgecolor=colors["two_qubit"]["edge"],
+                    alpha=0.5,
+                    linewidth=1.0,
                 )
                 ax.add_patch(rect)
 
@@ -432,22 +482,25 @@ class QAOAScheduler:
                 ha="center",
                 va="center",
                 fontsize=9,
-                bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=1)
+                bbox=dict(facecolor="white", alpha=0.8, edgecolor="none", pad=1),
             )
 
-        def draw_mixer_gate(ax, qubit, start_time, duration):
-            """Draw single-qubit gates with improved aesthetics."""
+        def draw_mixer_gate(ax, qubit, start_time, duration, scale_factor):
+            """Draw single-qubit gates with size proportional to their duration."""
+            # Calculate gate height proportional to its duration
+            gate_height = min_gate_height + (duration * scale_factor)
+
             rect = plt.Rectangle(
-                (start_time, qubit * qubit_spacing - gate_height / 3),
+                (start_time, qubit * qubit_spacing - gate_height / 2),
                 duration,
-                2 * gate_height / 3,
-                facecolor=colors['single_qubit']['fill'],
-                edgecolor=colors['single_qubit']['edge'],
+                gate_height,
+                facecolor=colors["single_qubit"]["fill"],
+                edgecolor=colors["single_qubit"]["edge"],
                 alpha=0.7,
-                linewidth=1.5
+                linewidth=1.5,
             )
             ax.add_patch(rect)
-            
+
             # Add gate label using mathtext
             ax.text(
                 start_time + duration / 2,
@@ -456,34 +509,39 @@ class QAOAScheduler:
                 ha="center",
                 va="center",
                 fontsize=9,
-                bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=1)
+                bbox=dict(facecolor="white", alpha=0.8, edgecolor="none", pad=1),
             )
 
-        # Add a legend for the plot
+        # Add a legend for the plot outside the axes
         def add_legend(ax):
-            """Add a legend explaining the gate types."""
+            """Add a legend positioned outside the plot area."""
             # Create dummy patches for the legend
             two_qubit_patch = plt.Rectangle(
-                (0, 0), 1, 1, 
-                facecolor=colors['two_qubit']['fill'], 
-                edgecolor=colors['two_qubit']['edge'], 
+                (0, 0),
+                1,
+                1,
+                facecolor=colors["two_qubit"]["fill"],
+                edgecolor=colors["two_qubit"]["edge"],
                 alpha=0.7,
-                label='Two-Qubit Operation'
+                label="Two-Qubit Gate",
             )
             single_qubit_patch = plt.Rectangle(
-                (0, 0), 1, 1, 
-                facecolor=colors['single_qubit']['fill'], 
-                edgecolor=colors['single_qubit']['edge'], 
+                (0, 0),
+                1,
+                1,
+                facecolor=colors["single_qubit"]["fill"],
+                edgecolor=colors["single_qubit"]["edge"],
                 alpha=0.7,
-                label='Single-Qubit Operation'
+                label="Single-Qubit Gate",
             )
-            
-            # Add the legend to the top-right corner
+
+            # Position the legend outside and to the right of the axes
             ax.legend(
                 handles=[two_qubit_patch, single_qubit_patch],
-                loc='upper right',
+                loc="upper left",
+                bbox_to_anchor=(1.02, 1),
                 framealpha=1.0,
-                fontsize=9
+                fontsize=10,
             )
 
         # Draw each schedule
@@ -492,59 +550,96 @@ class QAOAScheduler:
                 # Sequential Schedule
                 current_time = 0
                 max_time = result.total_time_before
+
+                # Calculate scale factor based on all gate times
+                all_gate_times = {
+                    **self.circuit.gamma_gates,
+                    **{
+                        (i,): self.circuit.beta_time
+                        for i in range(self.circuit.n_qubits)
+                    },
+                }
+                scale_factor = get_scale_factor(max_time, all_gate_times)
+
+                # Draw qubit lines with proper margins
                 draw_qubit_lines(ax, max_time)
 
                 for gate, time in self.circuit.gamma_gates.items():
-                    draw_cost_gate(ax, gate, current_time, time)
+                    draw_cost_gate(ax, gate, current_time, time, scale_factor)
                     current_time += time
 
                 for i in range(self.circuit.n_qubits):
-                    draw_mixer_gate(ax, i, current_time, self.circuit.beta_time)
+                    draw_mixer_gate(
+                        ax, i, current_time, self.circuit.beta_time, scale_factor
+                    )
 
                 ax.set_title(
                     f"{name} Schedule (Total Time: {result.total_time_before:.2f})",
-                    fontweight='bold'
+                    fontweight="bold",
                 )
-                ax.set_xlim(-1, max_time + 1)
             else:
                 # Layered, Greedy, or MIP Schedule
                 max_time = result.total_time_after
+
+                # Gather all gate times for scaling
+                all_gate_times = {
+                    **self.circuit.gamma_gates,
+                    **{
+                        (i,): self.circuit.beta_time
+                        for i in range(self.circuit.n_qubits)
+                    },
+                }
+                scale_factor = get_scale_factor(max_time, all_gate_times)
+
+                # Draw qubit lines with proper margins
                 draw_qubit_lines(ax, max_time)
 
                 for layer in result.cost_layers:
                     for gate in layer.gates:
                         start_time = layer.gate_start_times[gate]
                         draw_cost_gate(
-                            ax, gate, start_time, self.circuit.gamma_gates[gate]
+                            ax,
+                            gate,
+                            start_time,
+                            self.circuit.gamma_gates[gate],
+                            scale_factor,
                         )
 
                 for i in range(self.circuit.n_qubits):
                     beta_start = result.mixer_layer.gate_start_times.get((i,), 0)
-                    draw_mixer_gate(ax, i, beta_start, self.circuit.beta_time)
+                    draw_mixer_gate(
+                        ax, i, beta_start, self.circuit.beta_time, scale_factor
+                    )
 
                 ax.set_title(
                     f"{name} Schedule (Total Time: {result.total_time_after:.2f})",
-                    fontweight='bold'
+                    fontweight="bold",
                 )
-                ax.set_xlim(-1, max_time + 1)
 
             # Add time grid lines for better readability
-            ax.grid(True, axis='x', alpha=0.3, color=colors['time_grid'], linestyle='--')
-            
+            ax.grid(
+                True, axis="x", alpha=0.3, color=colors["time_grid"], linestyle="--"
+            )
+
             # Remove y-axis ticks but keep the time axis
             ax.set_yticks([])
             ax.set_ylim(-0.5, (self.circuit.n_qubits - 0.5) * qubit_spacing)
-            ax.set_xlabel("Time", fontweight='bold')
-            
-            # Add legend to each subplot
+            ax.set_xlabel("Time", fontweight="bold")
+
+            # Add legend outside the plot
             add_legend(ax)
 
-        # Adjust layout for better spacing
-        plt.tight_layout(pad=2.0)
-        
+            # Make sure y-axis starts at 0
+            ax.spines["left"].set_position(("data", 0))
+
+        # Adjust layout with extra space for the legend
+        plt.tight_layout()
+        # Add additional right spacing for the legend
+        plt.subplots_adjust(right=0.85, left=0.1)
+
         # Save high-resolution figure if path provided
         if save_path:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             plt.savefig(save_path, format="pdf", bbox_inches="tight", dpi=300)
-        
+
         plt.show()
