@@ -314,7 +314,7 @@ class QAOAScheduler:
         save_path=None,
     ):
         """
-        Visualize different scheduling approaches.
+        Visualize different scheduling approaches with proper mathematical notation.
 
         Args:
             results: Dictionary mapping schedule type to SchedulingResult
@@ -405,10 +405,11 @@ class QAOAScheduler:
                 )
                 ax.add_patch(rect)
 
+            # Use mathtext for two-qubit operations, which doesn't require LaTeX
             ax.text(
                 start_time + duration / 2,
                 (q_min + q_max) * qubit_spacing / 2,
-                f"γ={duration}",
+                f"$t_{{{q1},{q2}}}^{{(1)}}={duration:.1f}$",
                 ha="center",
                 va="center",
             )
@@ -423,10 +424,12 @@ class QAOAScheduler:
                 alpha=0.5,
             )
             ax.add_patch(rect)
+            
+            # Use mathtext for single-qubit operations
             ax.text(
                 start_time + duration / 2,
                 qubit * qubit_spacing,
-                f"β={duration}",
+                f"$t_{{{qubit}}}^{{(2)}}={duration:.1f}$",
                 ha="center",
                 va="center",
             )
@@ -446,7 +449,7 @@ class QAOAScheduler:
                     draw_mixer_gate(ax, i, current_time, self.circuit.beta_time)
 
                 ax.set_title(
-                    f"Sequential Schedule (Total Time: {result.total_time_before})"
+                    f"Sequential Schedule (Total Time: {result.total_time_before:.2f})"
                 )
                 ax.set_xlim(-1, result.total_time_before + 1)
             else:
@@ -464,7 +467,7 @@ class QAOAScheduler:
                     beta_start = result.mixer_layer.gate_start_times.get((i,), 0)
                     draw_mixer_gate(ax, i, beta_start, self.circuit.beta_time)
 
-                ax.set_title(f"{name} Schedule (Total Time: {result.total_time_after})")
+                ax.set_title(f"{name} Schedule (Total Time: {result.total_time_after:.2f})")
                 ax.set_xlim(-1, result.total_time_after + 1)
 
             ax.set_ylim(-1, (self.circuit.n_qubits - 0.5) * qubit_spacing)
