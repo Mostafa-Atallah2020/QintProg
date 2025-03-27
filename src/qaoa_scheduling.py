@@ -314,13 +314,22 @@ class QAOAScheduler:
         save_path=None,
     ):
         """
-        Visualize different scheduling approaches with proper mathematical notation.
+        Create publication-quality visualizations of different scheduling approaches.
 
         Args:
             results: Dictionary mapping schedule type to SchedulingResult
             selected_schedules: List of schedule names to display (displays all if None)
             save_path: Optional path to save plot as PDF
         """
+        # Set publication-quality plot parameters
+        plt.rcParams['font.family'] = 'serif'
+        plt.rcParams['font.size'] = 11
+        plt.rcParams['axes.linewidth'] = 1.5
+        plt.rcParams['axes.labelsize'] = 12
+        plt.rcParams['xtick.labelsize'] = 10
+        plt.rcParams['ytick.labelsize'] = 10
+        plt.rcParams['figure.dpi'] = 300
+        
         # Filter results based on selected_schedules
         if selected_schedules is not None:
             results = {
@@ -333,7 +342,7 @@ class QAOAScheduler:
             raise ValueError("No schedules selected for visualization")
 
         n_schedules = len(results)
-        fig, axes = plt.subplots(n_schedules, 1, figsize=(15, 4 * n_schedules))
+        fig, axes = plt.subplots(n_schedules, 1, figsize=(10, 3.5 * n_schedules))
         if n_schedules == 1:
             axes = [axes]
 
@@ -341,97 +350,140 @@ class QAOAScheduler:
         qubit_spacing = 1.0
         connector_width = 0.1
 
+        # Color definitions for better aesthetics
+        colors = {
+            'two_qubit': {'edge': '#D62728', 'fill': '#FFCCCC'},  # Red theme
+            'single_qubit': {'edge': '#1F77B4', 'fill': '#BBDEFB'},  # Blue theme
+            'qubit_line': '#333333',
+            'time_grid': '#DDDDDD'
+        }
+
         def draw_qubit_lines(ax, max_time):
+            """Draw horizontal lines representing qubits with labels."""
             for i in range(self.circuit.n_qubits):
                 ax.hlines(
                     y=i * qubit_spacing,
                     xmin=0,
                     xmax=max_time,
-                    color="black",
+                    color=colors['qubit_line'],
                     linewidth=1,
+                    alpha=0.7,
+                    linestyle='-'
                 )
-                ax.text(-0.5, i * qubit_spacing, f"Q{i}", ha="right", va="center")
+                ax.text(
+                    -0.5, 
+                    i * qubit_spacing, 
+                    f"Q{i}", 
+                    ha="right", 
+                    va="center", 
+                    fontweight='bold'
+                )
 
         def draw_cost_gate(ax, gate, start_time, duration):
+            """Draw two-qubit gates with improved visualization for non-adjacent qubits."""
             q1, q2 = gate
             q_min, q_max = min(q1, q2), max(q1, q2)
-
-            # Draw endpoints
-            for q in [q1, q2]:
-                rect = plt.Rectangle(
-                    (start_time, q * qubit_spacing - gate_height / 2),
-                    connector_width,
-                    gate_height,
-                    facecolor="red",
-                    edgecolor="red",
-                )
-                ax.add_patch(rect)
-                rect = plt.Rectangle(
-                    (
-                        start_time + duration - connector_width,
-                        q * qubit_spacing - gate_height / 2,
-                    ),
-                    connector_width,
-                    gate_height,
-                    facecolor="red",
-                    edgecolor="red",
-                )
-                ax.add_patch(rect)
-
-            # Draw connection
+            
+            # For non-adjacent qubits, shade the entire area with connections
             if abs(q1 - q2) > 1:
-                ax.vlines(
-                    start_time,
-                    q_min * qubit_spacing,
-                    q_max * qubit_spacing,
-                    color="red",
-                    alpha=0.5,
-                )
-                ax.vlines(
-                    start_time + duration - connector_width,
-                    q_min * qubit_spacing,
-                    q_max * qubit_spacing,
-                    color="red",
-                    alpha=0.5,
-                )
-            else:
+                # Add semi-transparent shaded region connecting the qubits
                 rect = plt.Rectangle(
                     (start_time, q_min * qubit_spacing),
                     duration,
                     (q_max - q_min) * qubit_spacing,
-                    facecolor="lightcoral",
-                    edgecolor="red",
+                    facecolor=colors['two_qubit']['fill'],
+                    edgecolor=colors['two_qubit']['edge'],
                     alpha=0.3,
+                    linestyle='dashed',
+                    linewidth=1.5
+                )
+                ax.add_patch(rect)
+                
+                # Add markers at each qubit position
+                for q in [q1, q2]:
+                    rect = plt.Rectangle(
+                        (start_time, q * qubit_spacing - gate_height / 2),
+                        duration,
+                        gate_height,
+                        facecolor=colors['two_qubit']['fill'],
+                        edgecolor=colors['two_qubit']['edge'],
+                        alpha=0.7,
+                        linewidth=1.5
+                    )
+                    ax.add_patch(rect)
+            else:
+                # For adjacent qubits, draw a solid connection
+                rect = plt.Rectangle(
+                    (start_time, q_min * qubit_spacing),
+                    duration,
+                    (q_max - q_min) * qubit_spacing,
+                    facecolor=colors['two_qubit']['fill'],
+                    edgecolor=colors['two_qubit']['edge'],
+                    alpha=0.7,
+                    linewidth=1.5
                 )
                 ax.add_patch(rect)
 
-            # Use mathtext for two-qubit operations, which doesn't require LaTeX
+            # Add gate label using mathtext
             ax.text(
                 start_time + duration / 2,
                 (q_min + q_max) * qubit_spacing / 2,
                 f"$t_{{{q1},{q2}}}^{{(1)}}={duration:.1f}$",
                 ha="center",
                 va="center",
+                fontsize=9,
+                bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=1)
             )
 
         def draw_mixer_gate(ax, qubit, start_time, duration):
+            """Draw single-qubit gates with improved aesthetics."""
             rect = plt.Rectangle(
                 (start_time, qubit * qubit_spacing - gate_height / 3),
                 duration,
                 2 * gate_height / 3,
-                facecolor="lightblue",
-                edgecolor="blue",
-                alpha=0.5,
+                facecolor=colors['single_qubit']['fill'],
+                edgecolor=colors['single_qubit']['edge'],
+                alpha=0.7,
+                linewidth=1.5
             )
             ax.add_patch(rect)
             
-            # Use mathtext for single-qubit operations
+            # Add gate label using mathtext
             ax.text(
                 start_time + duration / 2,
                 qubit * qubit_spacing,
                 f"$t_{{{qubit}}}^{{(2)}}={duration:.1f}$",
                 ha="center",
                 va="center",
+                fontsize=9,
+                bbox=dict(facecolor='white', alpha=0.8, edgecolor='none', pad=1)
+            )
+
+        # Add a legend for the plot
+        def add_legend(ax):
+            """Add a legend explaining the gate types."""
+            # Create dummy patches for the legend
+            two_qubit_patch = plt.Rectangle(
+                (0, 0), 1, 1, 
+                facecolor=colors['two_qubit']['fill'], 
+                edgecolor=colors['two_qubit']['edge'], 
+                alpha=0.7,
+                label='Two-Qubit Operation'
+            )
+            single_qubit_patch = plt.Rectangle(
+                (0, 0), 1, 1, 
+                facecolor=colors['single_qubit']['fill'], 
+                edgecolor=colors['single_qubit']['edge'], 
+                alpha=0.7,
+                label='Single-Qubit Operation'
+            )
+            
+            # Add the legend to the top-right corner
+            ax.legend(
+                handles=[two_qubit_patch, single_qubit_patch],
+                loc='upper right',
+                framealpha=1.0,
+                fontsize=9
             )
 
         # Draw each schedule
@@ -439,7 +491,8 @@ class QAOAScheduler:
             if name == "Sequential":
                 # Sequential Schedule
                 current_time = 0
-                draw_qubit_lines(ax, result.total_time_before)
+                max_time = result.total_time_before
+                draw_qubit_lines(ax, max_time)
 
                 for gate, time in self.circuit.gamma_gates.items():
                     draw_cost_gate(ax, gate, current_time, time)
@@ -449,12 +502,14 @@ class QAOAScheduler:
                     draw_mixer_gate(ax, i, current_time, self.circuit.beta_time)
 
                 ax.set_title(
-                    f"Sequential Schedule (Total Time: {result.total_time_before:.2f})"
+                    f"{name} Schedule (Total Time: {result.total_time_before:.2f})",
+                    fontweight='bold'
                 )
-                ax.set_xlim(-1, result.total_time_before + 1)
+                ax.set_xlim(-1, max_time + 1)
             else:
-                # Layered or Greedy Schedule
-                draw_qubit_lines(ax, result.total_time_after)
+                # Layered, Greedy, or MIP Schedule
+                max_time = result.total_time_after
+                draw_qubit_lines(ax, max_time)
 
                 for layer in result.cost_layers:
                     for gate in layer.gates:
@@ -467,15 +522,29 @@ class QAOAScheduler:
                     beta_start = result.mixer_layer.gate_start_times.get((i,), 0)
                     draw_mixer_gate(ax, i, beta_start, self.circuit.beta_time)
 
-                ax.set_title(f"{name} Schedule (Total Time: {result.total_time_after:.2f})")
-                ax.set_xlim(-1, result.total_time_after + 1)
+                ax.set_title(
+                    f"{name} Schedule (Total Time: {result.total_time_after:.2f})",
+                    fontweight='bold'
+                )
+                ax.set_xlim(-1, max_time + 1)
 
-            ax.set_ylim(-1, (self.circuit.n_qubits - 0.5) * qubit_spacing)
-            ax.set_xlabel("Time")
-            ax.grid(True, alpha=0.3)
+            # Add time grid lines for better readability
+            ax.grid(True, axis='x', alpha=0.3, color=colors['time_grid'], linestyle='--')
+            
+            # Remove y-axis ticks but keep the time axis
+            ax.set_yticks([])
+            ax.set_ylim(-0.5, (self.circuit.n_qubits - 0.5) * qubit_spacing)
+            ax.set_xlabel("Time", fontweight='bold')
+            
+            # Add legend to each subplot
+            add_legend(ax)
 
-        plt.tight_layout()
+        # Adjust layout for better spacing
+        plt.tight_layout(pad=2.0)
+        
+        # Save high-resolution figure if path provided
         if save_path:
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             plt.savefig(save_path, format="pdf", bbox_inches="tight", dpi=300)
+        
         plt.show()
