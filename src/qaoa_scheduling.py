@@ -393,8 +393,10 @@ class QAOAScheduler:
                     bbox=dict(facecolor="white", alpha=1.0, edgecolor="none", pad=2),
                 )
 
-            # Remove left spine for cleaner look
-            ax.spines["left"].set_visible(False)
+            # Keep the left spine visible and set its position to align with x=0
+            ax.spines["left"].set_position(("data", 0))
+            # Optional: Make the left spine slightly thicker for visibility
+            ax.spines["left"].set_linewidth(1.5)
 
         def draw_cost_gate(ax, gate, start_time, duration, label_offsets):
             """Draw two-qubit gates with improved visualization for non-adjacent qubits."""
