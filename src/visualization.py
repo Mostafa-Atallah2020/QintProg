@@ -5,6 +5,8 @@ from typing import Optional, Dict, Tuple
 from .coloring import MaxColoring
 from .lp_coloring import ColoringLP
 from .qaoa_scheduling import QAOACircuit
+import os
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 
 class GraphVisualizer:

@@ -314,7 +314,7 @@ class QAOAScheduler:
         save_path=None,
     ):
         """
-        Create publication-quality visualizations with proportionally sized operation blocks.
+        Create publication-quality visualizations of different scheduling approaches.
 
         Args:
             results: Dictionary mapping schedule type to SchedulingResult
@@ -341,19 +341,23 @@ class QAOAScheduler:
         if not results:
             raise ValueError("No schedules selected for visualization")
 
+        # Calculate global maximum time for common scale
+        global_max_time = 0
+        for name, result in results.items():
+            if name == "Sequential":
+                global_max_time = max(global_max_time, result.total_time_before)
+            else:
+                global_max_time = max(global_max_time, result.total_time_after)
+
         n_schedules = len(results)
-        # Add extra width to accommodate the legend outside the plot
+        # Increase figure width to accommodate legend outside
         fig, axes = plt.subplots(n_schedules, 1, figsize=(12, 3.5 * n_schedules))
         if n_schedules == 1:
             axes = [axes]
 
-        # Base qubit spacing
+        gate_height = 0.5
         qubit_spacing = 1.0
         connector_width = 0.1
-
-        # Minimum and maximum gate heights for scaling
-        min_gate_height = 0.2
-        max_gate_height = 0.6
 
         # Color definitions for better aesthetics
         colors = {
@@ -363,43 +367,22 @@ class QAOAScheduler:
             "time_grid": "#DDDDDD",
         }
 
-        def get_scale_factor(total_time, gate_times):
-            """Calculate scaling factor to appropriately size gates."""
-            if not gate_times:
-                return 1.0
-
-            max_time = max(gate_times.values()) if gate_times else 1.0
-            min_time = min(gate_times.values()) if gate_times else 1.0
-
-            # If all gates have the same time, use a fixed mid-size
-            if max_time == min_time:
-                return 0.4
-
-            # Calculate a normalization factor that maps the min time to min_gate_height
-            # and max time to max_gate_height
-            time_range = max_time - min_time
-            height_range = max_gate_height - min_gate_height
-
-            return height_range / time_range
-
-        def draw_qubit_lines(ax, max_time):
+        def draw_qubit_lines(ax):
             """Draw horizontal lines representing qubits with labels."""
-            # Set left margin for the plot to accommodate labels
-            ax.set_xlim(-0.8, max_time + 0.5)
+            # Set proper axis limits using global max time
+            ax.set_xlim(0, global_max_time + 1)
 
             for i in range(self.circuit.n_qubits):
-                # Draw qubit lines starting at position 0
                 ax.hlines(
                     y=i * qubit_spacing,
                     xmin=0,
-                    xmax=max_time,
+                    xmax=global_max_time + 1,
                     color=colors["qubit_line"],
                     linewidth=1,
                     alpha=0.7,
                     linestyle="-",
                 )
-
-                # Position qubit labels clearly outside the plot area
+                # Add qubit labels with a white background to ensure visibility
                 ax.text(
                     -0.2,
                     i * qubit_spacing,
@@ -410,13 +393,13 @@ class QAOAScheduler:
                     bbox=dict(facecolor="white", alpha=1.0, edgecolor="none", pad=2),
                 )
 
-        def draw_cost_gate(ax, gate, start_time, duration, scale_factor):
-            """Draw two-qubit gates with size proportional to their duration."""
+            # Remove left spine for cleaner look
+            ax.spines["left"].set_visible(False)
+
+        def draw_cost_gate(ax, gate, start_time, duration, label_offsets):
+            """Draw two-qubit gates with improved visualization for non-adjacent qubits."""
             q1, q2 = gate
             q_min, q_max = min(q1, q2), max(q1, q2)
-
-            # Calculate gate height proportional to its duration
-            gate_height = min_gate_height + (duration * scale_factor)
 
             # For non-adjacent qubits, shade the entire area with connections
             if abs(q1 - q2) > 1:
@@ -447,53 +430,62 @@ class QAOAScheduler:
                     ax.add_patch(rect)
             else:
                 # For adjacent qubits, draw a solid connection
-                edge_height = gate_height * 0.5  # Reduce the height on each qubit
-
-                # Draw boxes at each qubit position
-                for q in [q1, q2]:
-                    rect = plt.Rectangle(
-                        (start_time, q * qubit_spacing - edge_height / 2),
-                        duration,
-                        edge_height,
-                        facecolor=colors["two_qubit"]["fill"],
-                        edgecolor=colors["two_qubit"]["edge"],
-                        alpha=0.7,
-                        linewidth=1.5,
-                    )
-                    ax.add_patch(rect)
-
-                # Draw the connection between qubits
                 rect = plt.Rectangle(
-                    (start_time, q_min * qubit_spacing + edge_height / 2),
+                    (start_time, q_min * qubit_spacing),
                     duration,
-                    (q_max - q_min) * qubit_spacing - edge_height,
+                    (q_max - q_min) * qubit_spacing,
                     facecolor=colors["two_qubit"]["fill"],
                     edgecolor=colors["two_qubit"]["edge"],
-                    alpha=0.5,
-                    linewidth=1.0,
+                    alpha=0.7,
+                    linewidth=1.5,
                 )
                 ax.add_patch(rect)
 
+            # Calculate center position for the label
+            center_x = start_time + duration / 2
+            center_y = (q_min + q_max) * qubit_spacing / 2
+
+            # Get the offset for this label position
+            label_key = (center_x, center_y)
+            if label_key not in label_offsets:
+                label_offsets[label_key] = 0
+            else:
+                label_offsets[
+                    label_key
+                ] += 0.35  # Increment offset for overlapping labels
+
+            label_y = center_y + label_offsets[label_key]
+
+            # If label position is different from gate center, draw a connector line
+            if abs(label_y - center_y) > 0.05:
+                ax.plot(
+                    [center_x, center_x],
+                    [center_y, label_y],
+                    color=colors["two_qubit"]["edge"],
+                    linestyle="-",
+                    linewidth=0.8,
+                    alpha=0.6,
+                )
+
             # Add gate label using mathtext
             ax.text(
-                start_time + duration / 2,
-                (q_min + q_max) * qubit_spacing / 2,
+                center_x,
+                label_y,
                 f"$t_{{{q1},{q2}}}^{{(1)}}={duration:.1f}$",
                 ha="center",
                 va="center",
                 fontsize=9,
-                bbox=dict(facecolor="white", alpha=0.8, edgecolor="none", pad=1),
+                bbox=dict(facecolor="white", alpha=0.9, edgecolor="none", pad=1),
             )
 
-        def draw_mixer_gate(ax, qubit, start_time, duration, scale_factor):
-            """Draw single-qubit gates with size proportional to their duration."""
-            # Calculate gate height proportional to its duration
-            gate_height = min_gate_height + (duration * scale_factor)
+            return label_offsets
 
+        def draw_mixer_gate(ax, qubit, start_time, duration, label_offsets):
+            """Draw single-qubit gates with improved aesthetics."""
             rect = plt.Rectangle(
-                (start_time, qubit * qubit_spacing - gate_height / 2),
+                (start_time, qubit * qubit_spacing - gate_height / 3),
                 duration,
-                gate_height,
+                2 * gate_height / 3,
                 facecolor=colors["single_qubit"]["fill"],
                 edgecolor=colors["single_qubit"]["edge"],
                 alpha=0.7,
@@ -501,18 +493,46 @@ class QAOAScheduler:
             )
             ax.add_patch(rect)
 
+            # Calculate center position for the label
+            center_x = start_time + duration / 2
+            center_y = qubit * qubit_spacing
+
+            # Get the offset for this label position
+            label_key = (center_x, center_y)
+            if label_key not in label_offsets:
+                label_offsets[label_key] = 0
+            else:
+                label_offsets[
+                    label_key
+                ] += 0.35  # Increment offset for overlapping labels
+
+            label_y = center_y + label_offsets[label_key]
+
+            # If label position is different from gate center, draw a connector line
+            if abs(label_y - center_y) > 0.05:
+                ax.plot(
+                    [center_x, center_x],
+                    [center_y, label_y],
+                    color=colors["single_qubit"]["edge"],
+                    linestyle="-",
+                    linewidth=0.8,
+                    alpha=0.6,
+                )
+
             # Add gate label using mathtext
             ax.text(
-                start_time + duration / 2,
-                qubit * qubit_spacing,
+                center_x,
+                label_y,
                 f"$t_{{{qubit}}}^{{(2)}}={duration:.1f}$",
                 ha="center",
                 va="center",
                 fontsize=9,
-                bbox=dict(facecolor="white", alpha=0.8, edgecolor="none", pad=1),
+                bbox=dict(facecolor="white", alpha=0.9, edgecolor="none", pad=1),
             )
 
-        # Add a legend for the plot outside the axes
+            return label_offsets
+
+        # Add a legend for the plot
         def add_legend(ax):
             """Add a legend positioned outside the plot area."""
             # Create dummy patches for the legend
@@ -541,36 +561,36 @@ class QAOAScheduler:
                 loc="upper left",
                 bbox_to_anchor=(1.02, 1),
                 framealpha=1.0,
-                fontsize=10,
+                fontsize=9,
             )
 
         # Draw each schedule
         for ax, (name, result) in zip(axes, results.items()):
+            # Track label offsets for handling overlapping labels
+            label_offsets = {}
+
+            # Draw qubit lines with common scale
+            draw_qubit_lines(ax)
+
             if name == "Sequential":
                 # Sequential Schedule
                 current_time = 0
                 max_time = result.total_time_before
 
-                # Calculate scale factor based on all gate times
-                all_gate_times = {
-                    **self.circuit.gamma_gates,
-                    **{
-                        (i,): self.circuit.beta_time
-                        for i in range(self.circuit.n_qubits)
-                    },
-                }
-                scale_factor = get_scale_factor(max_time, all_gate_times)
+                # Sort gates by execution time (longest first) for better visual clarity
+                sorted_gates = sorted(
+                    self.circuit.gamma_gates.items(), key=lambda x: x[1], reverse=True
+                )
 
-                # Draw qubit lines with proper margins
-                draw_qubit_lines(ax, max_time)
-
-                for gate, time in self.circuit.gamma_gates.items():
-                    draw_cost_gate(ax, gate, current_time, time, scale_factor)
+                for gate, time in sorted_gates:
+                    label_offsets = draw_cost_gate(
+                        ax, gate, current_time, time, label_offsets
+                    )
                     current_time += time
 
                 for i in range(self.circuit.n_qubits):
-                    draw_mixer_gate(
-                        ax, i, current_time, self.circuit.beta_time, scale_factor
+                    label_offsets = draw_mixer_gate(
+                        ax, i, current_time, self.circuit.beta_time, label_offsets
                     )
 
                 ax.set_title(
@@ -581,35 +601,32 @@ class QAOAScheduler:
                 # Layered, Greedy, or MIP Schedule
                 max_time = result.total_time_after
 
-                # Gather all gate times for scaling
-                all_gate_times = {
-                    **self.circuit.gamma_gates,
-                    **{
-                        (i,): self.circuit.beta_time
-                        for i in range(self.circuit.n_qubits)
-                    },
-                }
-                scale_factor = get_scale_factor(max_time, all_gate_times)
-
-                # Draw qubit lines with proper margins
-                draw_qubit_lines(ax, max_time)
-
+                # Collect all operations with timing info
+                all_ops = []
                 for layer in result.cost_layers:
                     for gate in layer.gates:
                         start_time = layer.gate_start_times[gate]
-                        draw_cost_gate(
-                            ax,
-                            gate,
-                            start_time,
-                            self.circuit.gamma_gates[gate],
-                            scale_factor,
+                        all_ops.append(
+                            ("cost", gate, start_time, self.circuit.gamma_gates[gate])
                         )
 
                 for i in range(self.circuit.n_qubits):
                     beta_start = result.mixer_layer.gate_start_times.get((i,), 0)
-                    draw_mixer_gate(
-                        ax, i, beta_start, self.circuit.beta_time, scale_factor
-                    )
+                    all_ops.append(("mixer", i, beta_start, self.circuit.beta_time))
+
+                # Sort by start time, then by duration (longer first)
+                all_ops.sort(key=lambda x: (x[2], -x[3]))
+
+                # Draw all operations in order
+                for op_type, gate, start_time, duration in all_ops:
+                    if op_type == "cost":
+                        label_offsets = draw_cost_gate(
+                            ax, gate, start_time, duration, label_offsets
+                        )
+                    else:  # mixer
+                        label_offsets = draw_mixer_gate(
+                            ax, gate, start_time, duration, label_offsets
+                        )
 
                 ax.set_title(
                     f"{name} Schedule (Total Time: {result.total_time_after:.2f})",
@@ -629,13 +646,10 @@ class QAOAScheduler:
             # Add legend outside the plot
             add_legend(ax)
 
-            # Make sure y-axis starts at 0
-            ax.spines["left"].set_position(("data", 0))
-
         # Adjust layout with extra space for the legend
         plt.tight_layout()
         # Add additional right spacing for the legend
-        plt.subplots_adjust(right=0.85, left=0.1)
+        plt.subplots_adjust(right=0.85)
 
         # Save high-resolution figure if path provided
         if save_path:
